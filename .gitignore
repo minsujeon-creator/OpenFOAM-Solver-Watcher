@@ -1,0 +1,17 @@
+.worktrees/
+__pycache__/
+*.py[cod]
+*.pyd
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+.foam-watcher.json

@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>OpenFOAM Solver Watcher</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-block">
+      <div class="wordmark" aria-hidden="true">FW</div>
+      <div>
+        <p class="eyebrow">Single-case telemetry</p>
+        <h1>OpenFOAM Solver Watcher</h1>
+      </div>
+    </div>
+    <dl class="case-strip" aria-label="Monitored case">
+      <div>
+        <dt>Case</dt>
+        <dd id="case-name">Waiting for snapshot</dd>
+      </div>
+      <div>
+        <dt>Application / version</dt>
+        <dd id="application-version">—</dd>
+      </div>
+      <div>
+        <dt>Mode</dt>
+        <dd id="mode-label">—</dd>
+      </div>
+    </dl>
+    <div class="connection-block">
+      <p class="connection-line">
+        <span class="signal-dot" aria-hidden="true"></span>
+        <strong id="connection-state">Connecting</strong>
+      </p>
+      <p id="last-refresh" class="muted">No snapshot yet</p>
+      <p id="access-scope" class="access-note">Loopback only · remote access via SSH tunnel</p>
+      <button id="refresh-button" class="button secondary" type="button">Refresh now</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="status-grid" aria-label="Solver status summary">
+      <article id="card-process" class="status-card">
+        <p class="card-kicker">Process</p>
+        <p class="status-value" data-value>Unknown</p>
+        <p class="card-detail" data-detail>No process evidence yet</p>
+      </article>
+      <article id="card-numerics" class="status-card">
+        <p class="card-kicker">Numerics</p>
+        <p class="status-value" data-value>Indeterminate</p>
+        <p class="card-detail" data-detail>Awaiting solver records</p>
+      </article>
+      <article id="card-physical" class="status-card">
+        <p class="card-kicker">Physical state</p>
+        <p class="status-value" data-value>Indeterminate</p>
+        <p class="card-detail" data-detail>No monitored quantities</p>
+      </article>
+      <article id="card-progress" class="status-card">
+        <p class="card-kicker">Progress / rate</p>
+        <p class="status-value" data-value>—</p>
+        <p class="card-detail" data-detail>ETA unavailable</p>
+      </article>
+    </section>
+
+    <nav class="view-navigation" aria-label="Dashboard views">
+      <div id="view-tabs" class="tabs" role="tablist" aria-label="Case monitoring views">
+        <button id="tab-overview" role="tab" aria-controls="overview-view" aria-selected="true" tabindex="0" type="button">Overview</button>
+        <button id="tab-residuals" role="tab" aria-controls="residuals-view" aria-selected="false" tabindex="-1" type="button">Residuals</button>
+        <button id="tab-transient" role="tab" aria-controls="transient-view" aria-selected="false" tabindex="-1" type="button">Transient health</button>
+        <button id="tab-physical" role="tab" aria-controls="physical-view" aria-selected="false" tabindex="-1" type="button">Physical quantities</button>
+        <button id="tab-stationarity" role="tab" aria-controls="stationarity-view" aria-selected="false" tabindex="-1" type="button">Stationarity</button>
+        <button id="tab-diagnostics" role="tab" aria-controls="diagnostics-view" aria-selected="false" tabindex="-1" type="button">Diagnostics</button>
+      </div>
+    </nav>
+
+    <section id="overview-view" class="view-panel" role="tabpanel" aria-labelledby="tab-overview">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">At a glance</p>
+          <h2>Case overview</h2>
+        </div>
+        <p id="overview-summary" class="section-summary">Waiting for the first snapshot.</p>
+      </div>
+      <div class="two-column">
+        <article class="panel">
+          <div class="panel-heading">
+            <h3>Recent residuals</h3>
+            <a class="view-link" href="#residuals-view" data-open-view="residuals-view">Open chart</a>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Field</th>
+                  <th scope="col">Time</th>
+                  <th scope="col">Initial residual</th>
+                  <th scope="col">Target</th>
+                </tr>
+              </thead>
+              <tbody id="overview-residual-body"></tbody>
+            </table>
+          </div>
+        </article>
+        <article class="panel">
+          <div class="panel-heading">
+            <h3>Monitored quantities</h3>
+            <a class="view-link" href="#physical-view" data-open-view="physical-view">Manage quantities</a>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Quantity</th>
+                  <th scope="col">Current value</th>
+                  <th scope="col">State</th>
+                  <th scope="col">Samples</th>
+                </tr>
+              </thead>
+              <tbody id="overview-quantity-body"></tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+      <article class="panel evidence-panel">
+        <h3>Independent verdicts</h3>
+        <div id="verdict-summary" class="verdict-grid"></div>
+      </article>
+    </section>
+
+    <section id="residuals-view" class="view-panel" role="tabpanel" aria-labelledby="tab-residuals" hidden>
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Numerical evidence</p>
+          <h2>Residual history</h2>
+        </div>
+        <p class="section-summary">Initial residuals use a logarithmic y-axis. Configured targets are shown as dashed lines.</p>
+      </div>
+      <article class="panel chart-panel">
+        <div class="chart-legend" id="residual-legend" aria-label="Residual chart legend"></div>
+        <div class="chart-shell">
+          <canvas id="residual-chart" aria-label="Residual history chart">Residual history requires Canvas support.</canvas>
+        </div>
+      </article>
+      <article class="panel">
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Field</th>
+                <th scope="col">Time</th>
+                <th scope="col">Initial residual</th>
+                <th scope="col">Final residual</th>
+                <th scope="col">Iterations</th>
+                <th scope="col">Target</th>
+              </tr>
+            </thead>
+            <tbody id="residual-table-body"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <section id="transient-view" class="view-panel" role="tabpanel" aria-labelledby="tab-transient" hidden>
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Step quality</p>
+          <h2>Transient health</h2>
+        </div>
+        <p id="transient-summary" class="section-summary">This view is available for transient and pseudo-transient modes.</p>
+      </div>
+      <article class="panel chart-panel">
+        <div class="chart-shell">
+          <canvas id="transient-chart" aria-label="Courant number and time-step history">Transient history requires Canvas support.</canvas>
+        </div>
+      </article>
+      <article class="panel">
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Time</th>
+                <th scope="col">deltaT</th>
+                <th scope="col">Courant mean</th>
+                <th scope="col">Courant max</th>
+                <th scope="col">Continuity global</th>
+                <th scope="col">Outer correctors</th>
+              </tr>
+            </thead>
+            <tbody id="transient-table-body"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <section id="physical-view" class="view-panel" role="tabpanel" aria-labelledby="tab-physical" hidden>
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Function-object output</p>
+          <h2>Physical quantities</h2>
+        </div>
+        <p class="section-summary">Choose the quantities that should contribute to the independent physical verdict.</p>
+      </div>
+      <article class="panel chart-panel">
+        <div class="chart-legend" id="physical-legend" aria-label="Physical quantity chart legend"></div>
+        <div class="chart-shell">
+          <canvas id="physical-chart" aria-label="Selected physical quantity histories">Physical history requires Canvas support.</canvas>
+        </div>
+      </article>
+      <article class="panel">
+        <form aria-label="Monitored physical quantities">
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Monitor</th>
+                  <th scope="col">Quantity</th>
+                  <th scope="col">Current value</th>
+                  <th scope="col">State</th>
+                  <th scope="col">Samples</th>
+                  <th scope="col">Source</th>
+                  <th scope="col">Detail</th>
+                </tr>
+              </thead>
+              <tbody id="series-table-body"></tbody>
+            </table>
+          </div>
+        </form>
+      </article>
+    </section>
+
+    <section id="stationarity-view" class="view-panel" role="tabpanel" aria-labelledby="tab-stationarity" hidden>
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Physical evidence</p>
+          <h2>Stationarity windows</h2>
+        </div>
+        <p class="section-summary">Only recent analysis windows are drawn; numerical convergence remains a separate verdict.</p>
+      </div>
+      <article class="panel chart-panel">
+        <div class="chart-legend" id="stationarity-legend" aria-label="Stationarity chart legend"></div>
+        <div class="chart-shell">
+          <canvas id="stationarity-chart" aria-label="Selected stationarity analysis windows">Stationarity history requires Canvas support.</canvas>
+        </div>
+      </article>
+      <article class="panel">
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Quantity</th>
+                <th scope="col">State</th>
+                <th scope="col">Window samples</th>
+                <th scope="col">Effective samples</th>
+                <th scope="col">Normalized slope</th>
+                <th scope="col">Mean shift</th>
+                <th scope="col">Evidence</th>
+              </tr>
+            </thead>
+            <tbody id="stationarity-table-body"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <section id="diagnostics-view" class="view-panel" role="tabpanel" aria-labelledby="tab-diagnostics" hidden>
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Collection evidence</p>
+          <h2>Diagnostics</h2>
+        </div>
+        <p class="section-summary">Log ranking and notices explain where each dashboard signal came from.</p>
+      </div>
+      <div class="two-column diagnostics-grid">
+        <article class="panel">
+          <h3>Host and collector</h3>
+          <dl id="diagnostic-facts" class="fact-list"></dl>
+        </article>
+        <article class="panel">
+          <h3>Notices</h3>
+          <ul id="diagnostic-notices" class="notice-list"></ul>
+        </article>
+      </div>
+      <article class="panel">
+        <h3>Solver log candidates</h3>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Selected</th>
+                <th scope="col">Candidate</th>
+                <th scope="col">Score</th>
+                <th scope="col">Reason</th>
+              </tr>
+            </thead>
+            <tbody id="diagnostic-log-body"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <template id="series-row-template">
+    <tr>
+      <td>
+        <label class="series-toggle-label">
+          <input class="series-toggle" type="checkbox">
+          <span>Monitor</span>
+        </label>
+      </td>
+    </tr>
+  </template>
+
+  <div id="live-region" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>
