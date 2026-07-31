@@ -16,9 +16,11 @@ from watcher.log_parser import OpenFOAMLogParser
 from watcher.log_reader import IncrementalLogReader, discover_logs
 from watcher.models import (
     LogCandidate,
+    NumericalAssessment,
     ResidualSample,
     SeriesData,
     SeriesOverride,
+    SnappyTelemetry,
     SolverTelemetry,
     StationarityResult,
     StationaritySettings,
@@ -29,10 +31,12 @@ from watcher.models import (
 from watcher.persistence import load_config, save_config, validate_config_payload
 from watcher.postprocessing import discover_series, parse_numeric_table
 from watcher.stationarity import analyze_series, aggregate_stationarity
+from watcher.snappy_parser import SnappyHexMeshParser, read_snappy_settings
 
 
 _REFRESH_SECONDS = 2.0
 _RECENT_LOG_SECONDS = 90.0
+_STALE_SNAPPY_SECONDS = 300.0
 _PREVIEW_LIMIT = 300
 _SERIES_LIMIT = 2_000
 _SNAPSHOT_RESIDUAL_LIMIT = 1_000
@@ -53,6 +57,8 @@ class WatcherCollector:
         self._selected_log: Path | None = None
         self._reader: IncrementalLogReader | None = None
         self._parser = OpenFOAMLogParser()
+        self._snappy_parser: SnappyHexMeshParser | None = None
+        self._selected_workflow = "solver"
         self._post_signature: tuple[int, int, int] | None = None
         self._series: dict[str, SeriesData] = {}
         self._post_notices: tuple[dict[str, object], ...] = ()
@@ -64,6 +70,7 @@ class WatcherCollector:
         self._config = loaded.config
         candidates, selected = self._refresh_log(self._config)
         telemetry = self._parser.snapshot()
+        snappy = self._snappy_parser.snapshot() if self._snappy_parser is not None else None
         self._refresh_postprocessing()
 
         results = self._stationarity_results(self._config, now)
@@ -72,19 +79,28 @@ class WatcherCollector:
             results,
             self._config.accepted_states,
         )
-        numerics = evaluate_numerics(self.inspection, telemetry)
-        process = self._process_model(selected, telemetry, now)
+        numerics = (
+            _meshing_numerics(snappy)
+            if snappy is not None
+            else evaluate_numerics(self.inspection, telemetry)
+        )
+        process = self._process_model(selected, telemetry, snappy, now)
 
         notices = list(self._post_notices)
         notices.extend(
             _notice("case", message, "warning")
             for message in self.inspection.notices
         )
-        visible_solver_notices = telemetry.notices[-_SNAPSHOT_MESSAGE_LIMIT:]
-        notices.extend(
-            _notice("solver log", message, "warning")
-            for message in visible_solver_notices
-        )
+        if snappy is None:
+            visible_solver_notices = telemetry.notices[-_SNAPSHOT_MESSAGE_LIMIT:]
+            notices.extend(
+                _notice("solver log", message, "warning")
+                for message in visible_solver_notices
+            )
+        else:
+            visible_solver_notices = snappy.notices[-_SNAPSHOT_MESSAGE_LIMIT:]
+            notices.extend(_notice("snappyHexMesh", message, "warning") for message in visible_solver_notices)
+            notices.extend(_notice("snappyHexMesh", message, "warning") for message in snappy.warnings)
         if loaded.error is not None:
             notices.append(_notice(".foam-watcher.json", loaded.error, "error"))
         if selected is None and process["state"] == "not_started":
@@ -102,7 +118,11 @@ class WatcherCollector:
         bounded_notices, notice_count = _bounded_notices(
             notices,
             _SNAPSHOT_NOTICE_LIMIT,
-            omitted_count=len(telemetry.notices) - len(visible_solver_notices),
+            omitted_count=(
+                snappy.notice_count - len(visible_solver_notices)
+                if snappy is not None
+                else len(telemetry.notices) - len(visible_solver_notices)
+            ),
         )
         solver_model = self._solver_model(telemetry)
         solver_model["snapshotNoticeCount"] = notice_count
@@ -130,6 +150,12 @@ class WatcherCollector:
             },
             "notices": bounded_notices,
             "configuration": _configuration_model(self._config, loaded.error),
+            "workflow": {
+                "kind": self._selected_workflow if selected is not None else "unknown",
+                "label": "snappyHexMesh" if snappy is not None else "Solver",
+                "selectedLog": selected.relative_path if selected is not None else None,
+            },
+            "meshing": self._meshing_model(snappy),
         }
         return to_json_safe(model)  # type: ignore[return-value]
 
@@ -177,18 +203,30 @@ class WatcherCollector:
             explicit=self.explicit_log,
             saved_relative=config.selected_log,
         )
-        selected = _select_candidate(candidates)
+        active_workflows = _active_workflows(self.case_dir, self.inspection.application)
+        selected = _select_candidate(candidates, active_workflows)
         selected_path = selected.path if selected is not None else None
-        if selected_path != self._selected_log:
+        selected_workflow = selected.workflow if selected is not None else "unknown"
+        if selected_path != self._selected_log or selected_workflow != self._selected_workflow:
             self._selected_log = selected_path
+            self._selected_workflow = selected_workflow
             self._parser = OpenFOAMLogParser()
+            self._snappy_parser = (
+                SnappyHexMeshParser(read_snappy_settings(self.case_dir))
+                if selected_workflow == "snappy_hex_mesh"
+                else None
+            )
             self._reader = (
                 IncrementalLogReader(self.case_dir, selected_path)
                 if selected_path is not None
                 else None
             )
         if self._reader is not None:
-            self._parser.feed(self._reader.read())
+            chunk = self._reader.read()
+            if self._snappy_parser is not None:
+                self._snappy_parser.feed(chunk)
+            else:
+                self._parser.feed(chunk)
         return candidates, selected
 
     def _refresh_postprocessing(self) -> None:
@@ -281,9 +319,11 @@ class WatcherCollector:
         self,
         selected: LogCandidate | None,
         telemetry: SolverTelemetry,
+        snappy: SnappyTelemetry | None,
         now: float,
     ) -> dict[str, object]:
-        process = _matching_process(self.case_dir, self.inspection.application)
+        process_name = "snappyHexMesh" if self._selected_workflow == "snappy_hex_mesh" else self.inspection.application
+        process = _matching_process(self.case_dir, process_name)
         age = (
             max(0.0, now - selected.modified_ns / 1_000_000_000)
             if selected is not None
@@ -302,13 +342,28 @@ class WatcherCollector:
             pid = None
             command = None
             source = "log"
-            if telemetry.failure is not None:
+            if snappy is not None and getattr(snappy, "failure", None) is not None:
+                state = "failed"
+            elif snappy is not None and bool(getattr(snappy, "completed", False)):
+                state = "completed"
+            elif telemetry.failure is not None:
                 state = "failed"
             elif telemetry.completed or end_reached:
                 state = "completed"
-            elif selected is not None and age is not None and age <= _RECENT_LOG_SECONDS:
+            elif (
+                selected is not None
+                and age is not None
+                and age
+                <= (
+                    _STALE_SNAPPY_SECONDS
+                    if snappy is not None
+                    else _RECENT_LOG_SECONDS
+                )
+            ):
                 state = "running"
-            elif selected is not None and _has_parsed_log(telemetry):
+            elif snappy is not None and selected is not None and age is not None and age > _STALE_SNAPPY_SECONDS:
+                state = "stale"
+            elif selected is not None and (_has_parsed_log(telemetry) or snappy is not None):
                 state = "stopped"
             elif selected is None:
                 state = "not_started"
@@ -326,6 +381,16 @@ class WatcherCollector:
             ),
             "logAgeSeconds": age,
         }
+
+    def _meshing_model(self, telemetry: SnappyTelemetry | None) -> dict[str, object] | None:
+        if telemetry is None or self._snappy_parser is None:
+            return None
+        result = to_json_safe(telemetry)
+        assert isinstance(result, dict)
+        settings = self._snappy_parser.settings
+        result["settings"] = to_json_safe(settings)
+        result["progressScope"] = "snapping morph loop" if getattr(telemetry, "stage", None) == "snapping" else None
+        return result
 
     def _solver_model(self, telemetry: SolverTelemetry) -> dict[str, object]:
         residuals = _bounded_records(
@@ -362,7 +427,10 @@ class WatcherCollector:
         return result
 
 
-def _select_candidate(candidates: tuple[LogCandidate, ...]) -> LogCandidate | None:
+def _select_candidate(
+    candidates: tuple[LogCandidate, ...],
+    active_workflows: frozenset[str] = frozenset(),
+) -> LogCandidate | None:
     explicit = next(
         (candidate for candidate in candidates if "explicit selection" in candidate.reasons),
         None,
@@ -373,7 +441,43 @@ def _select_candidate(candidates: tuple[LogCandidate, ...]) -> LogCandidate | No
         (candidate for candidate in candidates if "saved selection" in candidate.reasons),
         None,
     )
-    return saved if saved is not None else (candidates[0] if candidates else None)
+    if saved is not None:
+        return saved
+    active = next(
+        (candidate for candidate in candidates if candidate.workflow in active_workflows),
+        None,
+    )
+    if active is not None:
+        return active
+    solvers = [candidate for candidate in candidates if candidate.workflow == "solver"]
+    snappy_logs = [candidate for candidate in candidates if candidate.workflow == "snappy_hex_mesh"]
+    best_solver = max(solvers, key=lambda candidate: (candidate.score, candidate.modified_ns), default=None)
+    newest_snappy = max(snappy_logs, key=lambda candidate: candidate.modified_ns, default=None)
+    if newest_snappy is not None and (
+        best_solver is None or newest_snappy.modified_ns > best_solver.modified_ns
+    ):
+        return newest_snappy
+    if best_solver is not None:
+        return best_solver
+    return candidates[0] if candidates else None
+
+
+def _meshing_numerics(telemetry: SnappyTelemetry) -> NumericalAssessment:
+    if telemetry.failure is not None:
+        return NumericalAssessment(
+            "not_applicable",
+            "failing",
+            f"Fatal snappyHexMesh failure: {telemetry.failure.label}.",
+            (),
+            None,
+        )
+    return NumericalAssessment(
+        "not_applicable",
+        "not_applicable",
+        "Solver convergence does not apply while snappyHexMesh is selected.",
+        (),
+        None,
+    )
 
 
 def _postprocessing_signature(
@@ -636,6 +740,15 @@ def _matching_process(
             continue
         return int(entry.name), command
     return None
+
+
+def _active_workflows(case_dir: Path, application: str | None) -> frozenset[str]:
+    active: set[str] = set()
+    if _matching_process(case_dir, "snappyHexMesh") is not None:
+        active.add("snappy_hex_mesh")
+    if application is not None and _matching_process(case_dir, application) is not None:
+        active.add("solver")
+    return frozenset(active)
 
 
 def _host_model() -> dict[str, object]:

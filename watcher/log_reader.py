@@ -17,6 +17,7 @@ _PREPROCESSING_UTILITY = re.compile(
     r"\b(?:blockMesh|checkMesh|decomposePar|reconstructPar|foamToVTK|renumberMesh|snappyHexMesh)\b",
     re.IGNORECASE,
 )
+_SNAPPY_HEX_MESH = re.compile(r"\bsnappyHexMesh\b", re.IGNORECASE)
 
 
 def discover_logs(
@@ -49,7 +50,18 @@ def discover_logs(
             candidates.append(_candidate(path, case_dir, inspection.application, reasons))
         except OSError:
             continue
-    return tuple(sorted(candidates, key=lambda item: (-item.score, -item.modified_ns, item.relative_path)))
+    return tuple(sorted(candidates, key=_candidate_rank))
+
+
+def _candidate_rank(candidate: LogCandidate) -> tuple[int, int, int, str]:
+    if "explicit selection" in candidate.reasons:
+        override = 0
+    elif "saved selection" in candidate.reasons:
+        override = 1
+    else:
+        override = 2
+    recognized = 0 if candidate.workflow in {"solver", "snappy_hex_mesh"} else 1
+    return override, recognized, -candidate.modified_ns, candidate.relative_path
 
 
 def _log_like_paths(case_dir: Path) -> tuple[Path, ...]:
@@ -99,19 +111,30 @@ def _candidate(
         score += 1000
     if "saved selection" in selection_reasons:
         score += 900
-    if application and application.lower() in filename.lower():
-        score += 200
-        reasons.append("application-name match")
-
     prefix = _read_range(path, 0, min(stat.st_size, _TAIL_BYTES))
     tail_start = max(0, stat.st_size - _TAIL_BYTES)
     tail = _read_range(path, tail_start, stat.st_size - tail_start)
     prefix_text = prefix.decode("utf-8", errors="replace")
     tail_text = tail.decode("utf-8", errors="replace")
+    combined_text = f"{filename}\n{prefix_text}\n{tail_text}"
+    application_filename_match = bool(application and application.lower() in filename.lower())
+    application_content_match = bool(
+        application
+        and re.search(rf"\b{re.escape(application)}\b", prefix_text, re.IGNORECASE)
+    )
+    application_match = application_filename_match or application_content_match
+    if application_match:
+        score += 200
+        reasons.append(
+            "application-name match"
+            if application_filename_match
+            else "application-content match"
+        )
     if "openfoam" in prefix_text.lower():
         score += 50
         reasons.append("OpenFOAM banner")
-    if _SOLVER_RECORD.search(tail_text):
+    has_solver_record = bool(_SOLVER_RECORD.search(tail_text))
+    if has_solver_record:
         score += 50
         reasons.append("solver record")
     if stat.st_mtime_ns >= time.time_ns() - _RECENT_NS:
@@ -120,9 +143,18 @@ def _candidate(
     if path.parent == case_dir:
         score += 10
         reasons.append("case-root file")
-    if _PREPROCESSING_UTILITY.search(filename) or _PREPROCESSING_UTILITY.search(prefix_text):
+    if _SNAPPY_HEX_MESH.search(combined_text):
+        workflow = "snappy_hex_mesh"
+        reasons.append("snappyHexMesh workflow")
+    elif _PREPROCESSING_UTILITY.search(filename) or _PREPROCESSING_UTILITY.search(prefix_text):
+        workflow = "utility"
         score -= 300
         reasons.append("preprocessing utility")
+    elif has_solver_record or application_match:
+        workflow = "solver"
+        reasons.append("solver workflow")
+    else:
+        workflow = "unknown"
     if stat.st_size == 0:
         score -= 25
         reasons.append("zero-length file")
@@ -130,6 +162,7 @@ def _candidate(
     return LogCandidate(
         path=path,
         relative_path=relative_path,
+        workflow=workflow,
         score=score,
         reasons=tuple(reasons),
         modified_ns=stat.st_mtime_ns,

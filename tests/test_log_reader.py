@@ -56,6 +56,45 @@ class LogDiscoveryTests(TestCase):
         self.assertEqual(ranked[0].relative_path, "log.simpleFoam")
         self.assertIn("application-name match", ranked[0].reasons)
 
+    def test_discovery_classifies_solver_snappy_and_other_utility_logs(self) -> None:
+        with TemporaryCase() as case:
+            case.write("system/controlDict", "application simpleFoam;\n")
+            case.write("log.simpleFoam", "OpenFOAM v2412\nTime = 1\n")
+            case.write("log.snappyHexMesh", "OpenFOAM v2412\nStarting mesh refinement\n")
+            case.write("log.checkMesh", "OpenFOAM v2412\nMesh OK.\n")
+
+            candidates = discover_logs(inspect_case(case.path), explicit=None, saved_relative=None)
+
+        workflows = {candidate.relative_path: candidate.workflow for candidate in candidates}
+        self.assertEqual(workflows["log.simpleFoam"], "solver")
+        self.assertEqual(workflows["log.snappyHexMesh"], "snappy_hex_mesh")
+        self.assertEqual(workflows["log.checkMesh"], "utility")
+
+    def test_fresh_snappy_log_is_ranked_above_old_solver_log(self) -> None:
+        with TemporaryCase() as case:
+            case.write("system/controlDict", "application simpleFoam;\n")
+            case.write("log.simpleFoam", "OpenFOAM v2412\nTime = 1\n")
+            case.write("log.snappyHexMesh", "OpenFOAM v2412\nMorph iteration 0\n")
+            case.touch("log.snappyHexMesh", seconds_after=5)
+
+            candidates = discover_logs(inspect_case(case.path), explicit=None, saved_relative=None)
+
+        recognized = [item for item in candidates if item.workflow in {"solver", "snappy_hex_mesh"}]
+        self.assertEqual(recognized[0].relative_path, "log.snappyHexMesh")
+
+    def test_generic_configured_solver_log_outranks_newer_utility_at_startup(self) -> None:
+        with TemporaryCase() as case:
+            case.write("system/controlDict", "application simpleFoam;\n")
+            case.write("log", "OpenFOAM v2412\nExec : simpleFoam\nCreate time\n")
+            case.write("log.checkMesh", "OpenFOAM v2412\nMesh OK.\n")
+            case.touch("log.checkMesh", seconds_after=5)
+
+            candidates = discover_logs(inspect_case(case.path), explicit=None, saved_relative=None)
+
+        self.assertEqual(candidates[0].relative_path, "log")
+        self.assertEqual(candidates[0].workflow, "solver")
+        self.assertIn("application-content match", candidates[0].reasons)
+
     def test_explicit_and_saved_selection_are_ranked_and_contained(self) -> None:
         # Omitting containment checks would include the external selection.
         with TemporaryCase() as case, TemporaryDirectory() as outside_directory:

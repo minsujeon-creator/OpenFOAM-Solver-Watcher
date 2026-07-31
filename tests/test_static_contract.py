@@ -3,6 +3,7 @@ from __future__ import annotations
 from html.parser import HTMLParser
 import json
 from pathlib import Path
+import re
 from tempfile import TemporaryDirectory
 from threading import Thread
 from unittest import TestCase
@@ -15,6 +16,7 @@ from watcher.snapshot import WatcherCollector
 
 EXPECTED_VIEWS = {
     "overview-view",
+    "meshing-view",
     "residuals-view",
     "transient-view",
     "physical-view",
@@ -36,6 +38,13 @@ REQUIRED_IDS = EXPECTED_VIEWS | {
     "last-refresh",
     "live-region",
     "mode-label",
+    "meshing-current-work",
+    "meshing-mesh-body",
+    "meshing-progress",
+    "meshing-settings",
+    "meshing-stage",
+    "meshing-summary",
+    "meshing-warning-list",
     "overview-quantity-body",
     "overview-residual-body",
     "physical-chart",
@@ -188,7 +197,7 @@ class StaticContractTests(TestCase):
         parser = DashboardHTMLParser()
         parser.feed(self.get("/").read().decode("utf-8"))
 
-        self.assertEqual(len(parser.tabs), 6)
+        self.assertEqual(len(parser.tabs), 7)
         for tab_id, attributes in parser.tabs.items():
             controlled = attributes.get("aria-controls")
             self.assertIn(controlled, EXPECTED_VIEWS)
@@ -212,12 +221,22 @@ class StaticContractTests(TestCase):
                 "Source",
                 "Candidate",
                 "Reason",
+                "Cells",
             }.issubset(parser.table_headers)
         )
 
     def test_frontend_assets_are_served_with_expected_media_types(self) -> None:
         self.assertIn("text/css", self.get("/styles.css").headers["Content-Type"])
         self.assertIn("javascript", self.get("/app.js").headers["Content-Type"])
+
+    def test_stylesheet_references_only_defined_custom_properties(self) -> None:
+        stylesheet = (Path(__file__).parents[1] / "static" / "styles.css").read_text(
+            encoding="utf-8"
+        )
+        definitions = set(re.findall(r"(--[a-z0-9-]+)\s*:", stylesheet, re.IGNORECASE))
+        references = set(re.findall(r"var\((--[a-z0-9-]+)", stylesheet, re.IGNORECASE))
+
+        self.assertEqual(references - definitions, set())
 
     def test_demo_case_exercises_every_dashboard_data_view(self) -> None:
         from tests.demo_case import generate_demo_case
@@ -236,6 +255,21 @@ class StaticContractTests(TestCase):
         self.assertTrue(snapshot["physical"]["results"])
         self.assertTrue(snapshot["logSelection"]["candidates"])
         self.assertTrue(snapshot["notices"])
+        json.dumps(snapshot, allow_nan=False)
+
+    def test_snappy_demo_case_exercises_meshing_dashboard_model(self) -> None:
+        from tests.demo_case import generate_snappy_demo_case
+
+        with TemporaryDirectory() as directory:
+            case_dir = Path(directory) / "snappy-demo"
+            generate_snappy_demo_case(case_dir)
+            snapshot = WatcherCollector(case_dir).snapshot()
+
+        self.assertEqual(snapshot["workflow"]["kind"], "snappy_hex_mesh")
+        self.assertEqual(snapshot["meshing"]["stage"], "snapping")
+        self.assertEqual(snapshot["meshing"]["activeMorphIteration"], 14)
+        self.assertEqual(snapshot["meshing"]["meshCells"], 8_903_300)
+        self.assertTrue(snapshot["meshing"]["maxGlobalCellsReached"])
         json.dumps(snapshot, allow_nan=False)
 
 

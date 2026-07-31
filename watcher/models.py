@@ -212,6 +212,7 @@ class CaseInspection:
 class LogCandidate:
     path: Path
     relative_path: str
+    workflow: str
     score: int
     reasons: tuple[str, ...]
     modified_ns: int
@@ -226,6 +227,16 @@ class LogChunk:
     lines: tuple[str, ...]
     file_size: int
     modified_ns: int
+
+
+@dataclass(frozen=True)
+class SnappySettings:
+    add_layers: bool | None
+    n_solve_iter: int | None
+    n_relax_iter: int | None
+    max_global_cells: int | None
+    stage_count: int
+    notices: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -262,6 +273,33 @@ class FailureRecord:
     line: str
     segment: int
     simulation_time: float | None
+
+
+@dataclass(frozen=True)
+class SnappyTelemetry:
+    current_segment: int
+    stage: str
+    stage_index: int | None
+    stage_count: int
+    current_work: str | None
+    active_morph_iteration: int | None
+    completed_morph_iterations: int | None
+    morph_total: int | None
+    smoothing_iteration: int | None
+    smoothing_total: int | None
+    phase_progress_percent: float | None
+    mesh_cells: int | None
+    mesh_faces: int | None
+    mesh_points: int | None
+    max_global_cells_reached: bool
+    execution_seconds: float | None
+    clock_seconds: float | None
+    completed: bool
+    warnings: tuple[str, ...]
+    warning_count: int
+    failure: FailureRecord | None
+    notices: tuple[str, ...]
+    notice_count: int
 
 
 @dataclass(frozen=True)

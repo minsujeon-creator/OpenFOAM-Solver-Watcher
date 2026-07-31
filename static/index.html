@@ -69,6 +69,7 @@
     <nav class="view-navigation" aria-label="Dashboard views">
       <div id="view-tabs" class="tabs" role="tablist" aria-label="Case monitoring views">
         <button id="tab-overview" role="tab" aria-controls="overview-view" aria-selected="true" tabindex="0" type="button">Overview</button>
+        <button id="tab-meshing" role="tab" aria-controls="meshing-view" aria-selected="false" tabindex="-1" type="button" hidden>Meshing</button>
         <button id="tab-residuals" role="tab" aria-controls="residuals-view" aria-selected="false" tabindex="-1" type="button">Residuals</button>
         <button id="tab-transient" role="tab" aria-controls="transient-view" aria-selected="false" tabindex="-1" type="button">Transient health</button>
         <button id="tab-physical" role="tab" aria-controls="physical-view" aria-selected="false" tabindex="-1" type="button">Physical quantities</button>
@@ -128,6 +129,49 @@
       <article class="panel evidence-panel">
         <h3>Independent verdicts</h3>
         <div id="verdict-summary" class="verdict-grid"></div>
+      </article>
+    </section>
+
+    <section id="meshing-view" class="view-panel" role="tabpanel" aria-labelledby="tab-meshing" hidden>
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Phase-local evidence</p>
+          <h2>snappyHexMesh progress</h2>
+        </div>
+        <p id="meshing-summary" class="section-summary">Waiting for a snappyHexMesh log.</p>
+      </div>
+      <div class="two-column">
+        <article class="panel">
+          <h3 id="meshing-stage">Stage unknown</h3>
+          <p id="meshing-current-work" class="section-summary">No current operation has been parsed.</p>
+          <label class="progress-label" for="meshing-progress">Current phase progress</label>
+          <progress id="meshing-progress" max="100">Indeterminate</progress>
+          <p id="meshing-progress-detail" class="muted">No reliable phase percentage is available.</p>
+        </article>
+        <article class="panel">
+          <h3>Meshing configuration</h3>
+          <dl id="meshing-settings" class="fact-list"></dl>
+        </article>
+      </div>
+      <article class="panel">
+        <h3>Latest mesh size</h3>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Cells</th>
+                <th scope="col">Faces</th>
+                <th scope="col">Points</th>
+                <th scope="col">maxGlobalCells</th>
+              </tr>
+            </thead>
+            <tbody id="meshing-mesh-body"></tbody>
+          </table>
+        </div>
+      </article>
+      <article class="panel">
+        <h3>Meshing warnings</h3>
+        <ul id="meshing-warning-list" class="notice-list"></ul>
       </article>
     </section>
 
@@ -285,13 +329,14 @@
         </article>
       </div>
       <article class="panel">
-        <h3>Solver log candidates</h3>
+        <h3>OpenFOAM log candidates</h3>
         <div class="table-scroll">
           <table>
             <thead>
               <tr>
                 <th scope="col">Selected</th>
                 <th scope="col">Candidate</th>
+                <th scope="col">Workflow</th>
                 <th scope="col">Score</th>
                 <th scope="col">Reason</th>
               </tr>

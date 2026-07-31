@@ -603,6 +603,38 @@ canvas {
   list-style: none;
 }
 
+.progress-label {
+  display: block;
+  margin: 22px 0 8px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+progress {
+  width: 100%;
+  height: 16px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  accent-color: var(--cyan);
+}
+
+progress::-webkit-progress-bar {
+  background: var(--surface);
+}
+
+progress::-webkit-progress-value {
+  background: linear-gradient(90deg, var(--cyan), var(--green));
+}
+
+progress::-moz-progress-bar {
+  background: linear-gradient(90deg, var(--cyan), var(--green));
+}
+
 .notice-list li {
   padding: 10px 12px;
   border-left: 2px solid var(--line-strong);

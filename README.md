@@ -1,9 +1,11 @@
 # OpenFOAM Solver Watcher
 
-A dependency-free, single-case dashboard for watching an OpenFOAM solver from
-your browser. It reads solver logs and `postProcessing` function-object output,
-then reports residuals, numerical convergence or transient health, physical
-quantity histories, and advisory quasi-steady/stationarity evidence.
+A dependency-free, single-case dashboard for watching an OpenFOAM solver or
+`snappyHexMesh` run from your browser. It automatically chooses the active
+workflow. Solver mode reports residuals, numerical convergence or transient
+health, `postProcessing` histories, and advisory quasi-steady/stationarity
+evidence. Meshing mode reports stages, phase-local progress, mesh counts, and
+warnings.
 
 The server listens on `127.0.0.1` only. For a solver running on another
 machine, access the dashboard through an SSH tunnel rather than exposing a web
@@ -16,7 +18,8 @@ port.
 
 - Python 3.10+ standard library only; no `pip install` is required.
 - Automatic `controlDict` application and steady/transient mode detection.
-- Automatic solver-log ranking, with an explicit `--log` override.
+- Automatic solver/`snappyHexMesh` workflow detection and log selection, with
+  an explicit `--log` override.
 - Incremental residual, time, Courant number, continuity, corrector, execution
   time, and fatal-state parsing.
 - Separate numerical and physical assessments:
@@ -32,6 +35,8 @@ port.
   `.foam-watcher.json`.
 - Bounded API responses and charts so long-running cases remain responsive.
 - Responsive, accessible dashboard with no CDN or third-party web assets.
+- Live `snappyHexMesh` stage, morph/smoothing, layer, mesh-size,
+  `maxGlobalCells`, warning, completion, failure, and stale evidence.
 
 ## Scope and non-goals
 
@@ -102,8 +107,9 @@ foam-watch [--case PATH] [--log PATH] [--port PORT]
 ```
 
 - `--case PATH` — case directory; defaults to the current directory.
-- `--log PATH` — select a particular solver log, such as
-  `log.pimpleFoam`; otherwise logs are ranked automatically.
+- `--log PATH` — select a particular OpenFOAM log, such as
+  `log.pimpleFoam` or `log.snappyHexMesh`; otherwise the workflow and log are
+  selected automatically.
 - `--port PORT` — loopback port; defaults to `8765`.
 
 The case must contain `system/controlDict` and either `constant/` or a numeric
@@ -139,6 +145,25 @@ Then open <http://127.0.0.1:9876>.
 The watcher intentionally has no option to bind to `0.0.0.0`.
 
 ## Reading the dashboard
+
+### snappyHexMesh progress
+
+When `log.snappyHexMesh` is the best active match, the watcher changes to a
+dedicated Meshing view. It reads `system/snappyHexMeshDict` when available and
+shows:
+
+- castellation, snapping, layer-addition, finalization, and completion stages;
+- active and completed zero-based morph loop positions;
+- displacement-smoothing progress from `nSolveIter`;
+- latest cell, face, and point counts;
+- `maxGlobalCells`, OpenFOAM warnings, fatal failures, and log age;
+- running, completed, failed, stale, or stopped evidence.
+
+A percentage is shown only when its denominator is known, and it is always
+labelled as progress within the current phase. For example, `13/15 = 86.7%`
+means 13 morph iterations have completed; it does **not** mean 86.7% of the
+total wall-clock meshing run. The watcher does not estimate a snappyHexMesh
+ETA.
 
 ### Numerical convergence
 
@@ -195,9 +220,12 @@ atomic. Deleting the file restores defaults.
 
 ## Logs and restarts
 
-When `--log` and a saved log selection are absent, candidate logs are ranked
-from their path, solver content, modification time, and size. The chosen log
-and alternatives are shown in the dashboard.
+When `--log` and a saved log selection are absent, candidate logs are
+classified and ranked from their path, bounded content evidence, configured
+solver, running case-contained processes, and modification time. A running
+workflow wins; otherwise a newer recognized `snappyHexMesh` run can supersede
+an old solver log, while unrelated utility logs do not. The chosen log and all
+alternatives are shown in Diagnostics.
 
 The reader tails logs incrementally and detects truncation or replacement.
 Repeated time values and restart segments in `postProcessing` tables are
@@ -220,6 +248,13 @@ python3 -m tests.demo_case --output /tmp/foam-watch-demo
 ./foam-watch --case /tmp/foam-watch-demo --port 8765
 ```
 
+Create a `snappyHexMesh` demonstration instead:
+
+```bash
+python3 -m tests.demo_case --workflow snappy --output /tmp/foam-watch-snappy-demo
+./foam-watch --case /tmp/foam-watch-snappy-demo --port 8765
+```
+
 ## Troubleshooting
 
 ### No solver log
@@ -231,6 +266,12 @@ pimpleFoam 2>&1 | tee log.pimpleFoam
 ```
 
 Or pass the correct existing file with `--log`.
+
+For meshing, capture the log in the same way:
+
+```bash
+snappyHexMesh -overwrite 2>&1 | tee log.snappyHexMesh
+```
 
 ### Unknown solver or mode
 
@@ -296,4 +337,3 @@ See [SECURITY.md](SECURITY.md). The supported remote-access design is:
 ```text
 browser -> local 127.0.0.1 -> SSH tunnel -> solver-host 127.0.0.1 -> watcher
 ```
-

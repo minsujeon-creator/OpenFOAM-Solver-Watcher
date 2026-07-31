@@ -3,6 +3,7 @@
 
   const VIEW_IDS = [
     "overview-view",
+    "meshing-view",
     "residuals-view",
     "transient-view",
     "physical-view",
@@ -263,21 +264,30 @@
     return state.refreshPromise;
   }
 
-  function updateTransientVisibility(snapshot) {
+  function updateWorkflowVisibility(snapshot) {
+    const meshing = snapshot.workflow && snapshot.workflow.kind === "snappy_hex_mesh";
     const mode = String(snapshot.case && snapshot.case.mode || "");
     const transient = mode.includes("transient") || mode.includes("pimple") || mode.includes("piso");
-    const tab = byId("tab-transient");
-    tab.hidden = !transient;
-    if (!transient && state.activeView === "transient-view") {
+    byId("tab-meshing").hidden = !meshing;
+    for (const id of ["tab-overview", "tab-residuals", "tab-physical", "tab-stationarity"]) {
+      byId(id).hidden = meshing;
+    }
+    byId("tab-transient").hidden = meshing || !transient;
+    if (meshing && state.activeView !== "meshing-view" && state.activeView !== "diagnostics-view") {
+      activateView("meshing-view", true);
+    } else if (!meshing && state.activeView === "meshing-view") {
+      activateView("overview-view", true);
+    } else if (!meshing && !transient && state.activeView === "transient-view") {
       activateView("overview-view", true);
     }
   }
 
   function renderSnapshot(snapshot) {
-    updateTransientVisibility(snapshot);
+    updateWorkflowVisibility(snapshot);
     renderHeader(snapshot);
     renderCards(snapshot);
     renderOverview(snapshot);
+    renderMeshing(snapshot);
     renderResiduals(snapshot);
     renderTransient(snapshot);
     renderPhysical(snapshot);
@@ -289,11 +299,12 @@
 
   function renderHeader(snapshot) {
     const caseData = snapshot.case || {};
+    const meshing = snapshot.workflow && snapshot.workflow.kind === "snappy_hex_mesh";
     byId("case-name").textContent = baseName(caseData.caseDir);
-    const application = caseData.application || "Unknown solver";
+    const application = meshing ? "snappyHexMesh" : caseData.application || "Unknown solver";
     const version = caseData.openfoamVersion ? ` · ${caseData.openfoamVersion}` : "";
     byId("application-version").textContent = `${application}${version}`;
-    byId("mode-label").textContent = titleCase(caseData.mode);
+    byId("mode-label").textContent = meshing ? "Meshing" : titleCase(caseData.mode);
     const generated = new Date(snapshot.generatedAt);
     byId("last-refresh").textContent = Number.isNaN(generated.getTime())
       ? "Snapshot time unavailable"
@@ -309,10 +320,27 @@
 
   function renderCards(snapshot) {
     const process = snapshot.process || {};
+    const meshingWorkflow = snapshot.workflow && snapshot.workflow.kind === "snappy_hex_mesh";
     const processDetail = process.pid
       ? `PID ${process.pid} · ${process.source || "process evidence"}`
       : `${titleCase(process.source || "no source")} evidence · age ${formatDuration(process.logAgeSeconds)}`;
     setCard("card-process", titleCase(process.state), processDetail, toneFor(process.state));
+
+    if (meshingWorkflow) {
+      const meshing = snapshot.meshing || {};
+      const stage = finite(meshing.stageIndex)
+        ? `${titleCase(meshing.stage)} (${formatNumber(meshing.stageIndex, 0)}/${formatNumber(meshing.stageCount, 0)})`
+        : titleCase(meshing.stage || "unknown");
+      setCard("card-numerics", stage, meshing.currentWork || "No current meshing operation parsed.", toneFor(process.state));
+      const cells = finite(meshing.meshCells) ? `${formatNumber(meshing.meshCells, 0)} cells` : "Unknown";
+      setCard("card-physical", cells, `${formatNumber(meshing.meshFaces, 0)} faces · ${formatNumber(meshing.meshPoints, 0)} points`, finite(meshing.meshCells) ? "good" : "warning");
+      const phasePercent = finite(meshing.phaseProgressPercent) ? `${formatNumber(meshing.phaseProgressPercent, 1)}%` : "—";
+      const smoothing = finite(meshing.smoothingIteration)
+        ? `smoothing ${formatNumber(meshing.smoothingIteration, 0)}/${formatNumber(meshing.smoothingTotal, 0)}`
+        : "phase progress unavailable";
+      setCard("card-progress", phasePercent, `${meshing.progressScope || "Current phase"} · ${smoothing}`, finite(meshing.phaseProgressPercent) ? "good" : "warning");
+      return;
+    }
 
     const numerics = snapshot.numerics || {};
     setCard(
@@ -341,6 +369,67 @@
       `${rate} · ETA ${formatDuration(progress.etaSeconds)}`,
       finite(progress.percent) ? "good" : "warning",
     );
+  }
+
+  function renderMeshing(snapshot) {
+    const meshing = snapshot.meshing;
+    if (!meshing) {
+      return;
+    }
+    const process = snapshot.process || {};
+    const stagePosition = finite(meshing.stageIndex)
+      ? `${formatNumber(meshing.stageIndex, 0)}/${formatNumber(meshing.stageCount, 0)}`
+      : "position unknown";
+    byId("meshing-summary").textContent = `${titleCase(process.state)} · ${titleCase(meshing.stage)} · stage ${stagePosition}`;
+    byId("meshing-stage").textContent = `${titleCase(meshing.stage)} (${stagePosition})`;
+    byId("meshing-current-work").textContent = meshing.currentWork || "No current operation has been parsed.";
+
+    const progress = byId("meshing-progress");
+    if (finite(meshing.phaseProgressPercent)) {
+      progress.value = Math.max(0, Math.min(100, meshing.phaseProgressPercent));
+      progress.textContent = `${formatNumber(meshing.phaseProgressPercent, 1)}%`;
+    } else {
+      progress.removeAttribute("value");
+      progress.textContent = "Indeterminate";
+    }
+    const morph = finite(meshing.completedMorphIterations)
+      ? `${formatNumber(meshing.completedMorphIterations, 0)}/${formatNumber(meshing.morphTotal, 0)} morph iterations complete`
+      : "No reliable phase percentage is available";
+    byId("meshing-progress-detail").textContent = `${meshing.progressScope || "Current phase"}: ${morph}. This is not total runtime progress.`;
+
+    const settings = meshing.settings || {};
+    const settingEntries = [
+      ["Layer addition", settings.addLayers === true ? "Enabled" : settings.addLayers === false ? "Disabled" : "Unknown"],
+      ["Morph iterations", settings.nRelaxIter],
+      ["Smoothing iterations", settings.nSolveIter],
+      ["Configured maxGlobalCells", settings.maxGlobalCells],
+      ["Warnings observed", meshing.warningCount],
+      ["Execution / clock", `${formatDuration(meshing.executionSeconds)} / ${formatDuration(meshing.clockSeconds)}`],
+    ];
+    const settingNodes = [];
+    for (const [label, value] of settingEntries) {
+      settingNodes.push(element("dt", "", label), element("dd", "", value === null || value === undefined ? "—" : String(value)));
+    }
+    byId("meshing-settings").replaceChildren(...settingNodes);
+
+    const meshRow = element("tr");
+    meshRow.append(
+      tableCell(formatNumber(meshing.meshCells, 0), "number"),
+      tableCell(formatNumber(meshing.meshFaces, 0), "number"),
+      tableCell(formatNumber(meshing.meshPoints, 0), "number"),
+      tableCell(meshing.maxGlobalCellsReached ? "Reached" : "Not observed"),
+    );
+    byId("meshing-mesh-body").replaceChildren(meshRow);
+
+    const warnings = Array.isArray(meshing.warnings) ? [...meshing.warnings] : [];
+    if (meshing.failure && meshing.failure.line) {
+      warnings.unshift(`${meshing.failure.label}: ${meshing.failure.line}`);
+    }
+    if (!warnings.length) {
+      byId("meshing-warning-list").replaceChildren(element("li", "", "No meshing warnings have been parsed."));
+    } else {
+      byId("meshing-warning-list").replaceChildren(...warnings.map((warning) => element("li", "", warning)));
+    }
   }
 
   function targetForField(field, targets) {
@@ -868,6 +957,7 @@
       ["CPU count", snapshot.host && snapshot.host.cpuCount],
       ["Load average", Array.isArray(snapshot.host && snapshot.host.loadAverage) ? snapshot.host.loadAverage.map((value) => formatNumber(value, 2)).join(" / ") : null],
       ["Selected log", snapshot.logSelection && snapshot.logSelection.selected],
+      ["Workflow", snapshot.workflow && snapshot.workflow.label],
       ["Current segment", snapshot.solver && snapshot.solver.currentSegment],
       ["Residual samples", snapshot.solver && snapshot.solver.residualCount],
       ["Time-step samples", snapshot.solver && snapshot.solver.timeStepCount],
@@ -897,7 +987,7 @@
     const logBody = byId("diagnostic-log-body");
     const candidates = snapshot.logSelection && snapshot.logSelection.candidates;
     if (!Array.isArray(candidates) || !candidates.length) {
-      emptyTable(logBody, 4, "No solver log candidates were found.");
+      emptyTable(logBody, 5, "No OpenFOAM log candidates were found.");
       return;
     }
     const selected = snapshot.logSelection.selected;
@@ -907,6 +997,7 @@
       row.append(
         tableCell(candidate.relativePath === selected ? "Yes" : "No"),
         tableCell(candidate.relativePath || "Unknown"),
+        tableCell(titleCase(candidate.workflow || "unknown")),
         tableCell(formatNumber(candidate.score, 0), "number"),
         tableCell(reasons),
       );
