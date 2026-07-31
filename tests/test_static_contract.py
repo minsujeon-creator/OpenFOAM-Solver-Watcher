@@ -17,6 +17,7 @@ from watcher.snapshot import WatcherCollector
 EXPECTED_VIEWS = {
     "overview-view",
     "meshing-view",
+    "mesh-quality-view",
     "residuals-view",
     "transient-view",
     "physical-view",
@@ -45,6 +46,14 @@ REQUIRED_IDS = EXPECTED_VIEWS | {
     "meshing-stage",
     "meshing-summary",
     "meshing-warning-list",
+    "layer-coverage-body",
+    "layer-coverage-summary",
+    "layer-coverage-advisory",
+    "mesh-quality-summary",
+    "mesh-quality-facts",
+    "mesh-quality-metric-body",
+    "mesh-quality-problem-body",
+    "mesh-quality-diagnostics",
     "overview-quantity-body",
     "overview-residual-body",
     "physical-chart",
@@ -197,7 +206,7 @@ class StaticContractTests(TestCase):
         parser = DashboardHTMLParser()
         parser.feed(self.get("/").read().decode("utf-8"))
 
-        self.assertEqual(len(parser.tabs), 7)
+        self.assertEqual(len(parser.tabs), 8)
         for tab_id, attributes in parser.tabs.items():
             controlled = attributes.get("aria-controls")
             self.assertIn(controlled, EXPECTED_VIEWS)
@@ -222,6 +231,9 @@ class StaticContractTests(TestCase):
                 "Candidate",
                 "Reason",
                 "Cells",
+                "Observed",
+                "Requested layers",
+                "Average layers",
             }.issubset(parser.table_headers)
         )
 
@@ -270,6 +282,7 @@ class StaticContractTests(TestCase):
         self.assertEqual(snapshot["meshing"]["activeMorphIteration"], 14)
         self.assertEqual(snapshot["meshing"]["meshCells"], 8_903_300)
         self.assertTrue(snapshot["meshing"]["maxGlobalCellsReached"])
+        self.assertEqual(snapshot["meshing"]["layerCoverage"]["reportedPatchCount"], 2)
         json.dumps(snapshot, allow_nan=False)
 
 

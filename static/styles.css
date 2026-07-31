@@ -650,6 +650,22 @@ progress::-moz-progress-bar {
   border-left-color: var(--amber);
 }
 
+.advisory-note {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border-left: 2px solid var(--amber);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.diagnostic-output li {
+  font-family: var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .notice-source {
   display: block;
   margin-bottom: 3px;

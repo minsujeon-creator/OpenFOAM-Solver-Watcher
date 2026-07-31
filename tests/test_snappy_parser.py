@@ -47,6 +47,30 @@ class SnappySettingsTests(TestCase):
         self.assertEqual(settings.max_global_cells, 10_000_000)
         self.assertEqual(settings.stage_count, 3)
 
+    def test_reads_exact_and_regex_surface_layer_requests(self) -> None:
+        with TemporaryCase() as case:
+            case.write(
+                "system/snappyHexMeshDict",
+                """
+                addLayers true;
+                addLayersControls
+                {
+                    layers
+                    {
+                        blade { nSurfaceLayers 5; }
+                        "(hub|shroud).*" { nSurfaceLayers 3; }
+                    }
+                }
+                """,
+            )
+
+            settings = read_snappy_settings(case.path)
+
+        self.assertEqual(
+            [(item.selector, item.requested_layers) for item in settings.layer_requests],
+            [("blade", 5), ("(hub|shroud).*", 3)],
+        )
+
     def test_missing_values_remain_unknown_and_disabled_layers_use_two_stages(self) -> None:
         with TemporaryCase() as case:
             case.write("system/snappyHexMeshDict", "addLayers false;\n")
@@ -61,6 +85,148 @@ class SnappySettingsTests(TestCase):
 
 
 class SnappyParserTests(TestCase):
+    def test_parses_latest_layer_coverage_and_compares_requested_layers(self) -> None:
+        with TemporaryCase() as case:
+            case.write(
+                "system/snappyHexMeshDict",
+                """
+                addLayers true;
+                addLayersControls
+                {
+                    layers
+                    {
+                        blade { nSurfaceLayers 5; }
+                        "(hub|shroud).*" { nSurfaceLayers 3; }
+                        casing { nSurfaceLayers 2; }
+                    }
+                }
+                """,
+            )
+            parser = SnappyHexMeshParser(read_snappy_settings(case.path))
+            parser.feed(
+                _chunk(
+                    case,
+                    """
+patch faces layers overall thickness
+                   [m] [%]
+----- ----- ------ --- ---
+blade 1000 5.00 0.0012 96.0
+hubWall 400 1.50 0.0008 45.0
+casing 250 0.00 0.0000 0.0
+Finalising layer addition
+""".lstrip(),
+                )
+            )
+
+            coverage = parser.snapshot().layer_coverage
+
+        rows = {row.patch: row for row in coverage.rows}
+        self.assertEqual(coverage.status, "missing")
+        self.assertEqual(rows["blade"].requested_layers, 5)
+        self.assertEqual(rows["blade"].status, "met")
+        self.assertEqual(rows["blade"].layer_fraction, 1.0)
+        self.assertEqual(rows["hubWall"].requested_layers, 3)
+        self.assertEqual(rows["hubWall"].status, "partial")
+        self.assertEqual(rows["hubWall"].thickness_percent, 45.0)
+        self.assertEqual(rows["casing"].status, "missing")
+
+    def test_replaces_an_older_layer_table_and_ignores_incomplete_rows(self) -> None:
+        with TemporaryCase() as case:
+            case.write("system/snappyHexMeshDict", "addLayers true;\n")
+            parser = SnappyHexMeshParser(read_snappy_settings(case.path))
+            parser.feed(
+                _chunk(
+                    case,
+                    """
+patch faces layers overall thickness
+[m] [%]
+oldPatch 12 1 0.1 100
+patch faces layers overall thickness
+[m] [%]
+newPatch 20 2 0.2 80
+truncatedPatch 30 2
+""".lstrip(),
+                )
+            )
+
+            coverage = parser.snapshot().layer_coverage
+
+        self.assertEqual([row.patch for row in coverage.rows], ["oldPatch"])
+        self.assertEqual(coverage.status, "unknown")
+
+    def test_keeps_last_complete_table_while_replacement_is_still_being_written(self) -> None:
+        with TemporaryCase() as case:
+            case.write("system/snappyHexMeshDict", "addLayers true;\n")
+            parser = SnappyHexMeshParser(read_snappy_settings(case.path))
+            parser.feed(
+                _chunk(
+                    case,
+                    "patch faces layers overall thickness\n[m] [%]\noldPatch 12 1 0.1 100\nDone\n",
+                )
+            )
+            parser.feed(
+                _chunk(
+                    case,
+                    "patch faces layers overall thickness\n[m] [%]\npatch group 20 2 0.2 80\n",
+                )
+            )
+
+            coverage = parser.snapshot().layer_coverage
+            parser.feed(_chunk(case, "Done\n"))
+            completed = parser.snapshot().layer_coverage
+
+        self.assertEqual([row.patch for row in coverage.rows], ["oldPatch"])
+        self.assertEqual([row.patch for row in completed.rows], ["patch group"])
+
+    def test_does_not_claim_met_when_a_configured_selector_is_absent_from_table(self) -> None:
+        with TemporaryCase() as case:
+            case.write(
+                "system/snappyHexMeshDict",
+                """
+                addLayers true;
+                addLayersControls
+                {
+                    layers
+                    {
+                        blade { nSurfaceLayers 2; }
+                        missingWall { nSurfaceLayers 3; }
+                    }
+                }
+                """,
+            )
+            parser = SnappyHexMeshParser(read_snappy_settings(case.path))
+            parser.feed(
+                _chunk(
+                    case,
+                    "patch faces layers overall thickness\n[m] [%]\nblade 20 2 0.2 100\nDone\n",
+                )
+            )
+
+            coverage = parser.snapshot().layer_coverage
+
+        self.assertEqual(coverage.status, "unknown")
+        self.assertEqual(coverage.unmatched_selectors, ("missingWall",))
+
+    def test_empty_layer_table_terminates_without_consuming_later_numeric_lines(self) -> None:
+        with TemporaryCase() as case:
+            case.write("system/snappyHexMeshDict", "addLayers true;\n")
+            parser = SnappyHexMeshParser(read_snappy_settings(case.path))
+            parser.feed(
+                _chunk(
+                    case,
+                    """\
+patch faces layers overall thickness
+[m] [%]
+No patches received layers
+unrelated numeric record 20 2 0.2 80
+""",
+                )
+            )
+
+            coverage = parser.snapshot().layer_coverage
+
+        self.assertEqual(coverage.reported_patch_count, 0)
+
     def test_parses_zero_based_morph_and_smoothing_progress_with_mesh_counts(self) -> None:
         with TemporaryCase() as case:
             case.write(

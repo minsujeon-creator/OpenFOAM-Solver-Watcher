@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from tests.helpers import TemporaryCase
 from watcher.persistence import ConfigValidationError, save_config
-from watcher.models import SeriesOverride, WatcherConfig, to_json_safe
+from watcher.models import MeshQualityStatus, SeriesOverride, WatcherConfig, to_json_safe
 from watcher.snapshot import WatcherCollector
 
 
@@ -30,7 +30,22 @@ EXPECTED_TOP_LEVEL = {
     "configuration",
     "workflow",
     "meshing",
+    "meshQuality",
 }
+
+
+class _FakeCheckMeshMonitor:
+    def __init__(self, status: MeshQualityStatus) -> None:
+        self.status = status
+        self.busy_values: list[bool] = []
+        self.closed = False
+
+    def update(self, *, mesh_busy: bool) -> MeshQualityStatus:
+        self.busy_values.append(mesh_busy)
+        return self.status
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def _populate_case(case: TemporaryCase, *, end_time: float = 1.0) -> None:
@@ -79,6 +94,82 @@ def _old(path: Path) -> None:
 
 
 class SnapshotIntegrationTests(TestCase):
+    def test_snapshot_exposes_mesh_quality_and_layer_coverage(self) -> None:
+        status = MeshQualityStatus(
+            state="stabilizing",
+            summary="Mesh changed; waiting for stable files.",
+            mesh_source="constant/polyMesh",
+            stable_for_seconds=4.0,
+            next_check_seconds=11.0,
+            report=None,
+            advisory="Advisory only.",
+        )
+        monitor = _FakeCheckMeshMonitor(status)
+        with TemporaryCase() as case:
+            case.write("system/controlDict", "application simpleFoam;\n")
+            case.write("system/snappyHexMeshDict", "addLayers true;\n")
+            case.write(
+                "log.snappyHexMesh",
+                """\
+patch faces layers overall thickness
+[m] [%]
+wall 100 2 0.001 80
+End
+""",
+            )
+            snapshot = WatcherCollector(
+                case.path,
+                checkmesh_monitor=monitor,
+            ).snapshot()
+
+        self.assertEqual(snapshot["meshQuality"]["state"], "stabilizing")
+        self.assertEqual(snapshot["meshQuality"]["meshSource"], "constant/polyMesh")
+        self.assertEqual(snapshot["meshing"]["layerCoverage"]["reportedPatchCount"], 1)
+        self.assertEqual(snapshot["meshing"]["layerCoverage"]["rows"][0]["patch"], "wall")
+        self.assertEqual(monitor.busy_values, [False])
+
+    def test_active_snappy_workflow_defers_automatic_mesh_check(self) -> None:
+        status = MeshQualityStatus("deferred", "Mesher active.", None, 0.0, None, None, "Advisory")
+        monitor = _FakeCheckMeshMonitor(status)
+        with TemporaryCase() as case:
+            case.write("system/controlDict", "application simpleFoam;\n")
+            case.write("system/snappyHexMeshDict", "addLayers true;\n")
+            case.write("log.snappyHexMesh", "Morph iteration 2\n")
+
+            WatcherCollector(case.path, checkmesh_monitor=monitor).snapshot()
+
+        self.assertEqual(monitor.busy_values, [True])
+
+    def test_active_snappy_process_defers_check_even_when_solver_log_is_explicit(self) -> None:
+        status = MeshQualityStatus("deferred", "Mesher active.", None, 0.0, None, None, "Advisory")
+        monitor = _FakeCheckMeshMonitor(status)
+        with TemporaryCase() as case:
+            _populate_case(case)
+
+            def process_match(_case_dir: Path, application: str | None):
+                if application == "snappyHexMesh":
+                    return 4321, "snappyHexMesh -overwrite"
+                return None
+
+            with patch("watcher.snapshot._matching_process", side_effect=process_match):
+                WatcherCollector(
+                    case.path,
+                    explicit_log=case.path / "log.pimpleFoam",
+                    checkmesh_monitor=monitor,
+                ).snapshot()
+
+        self.assertEqual(monitor.busy_values, [True])
+
+    def test_collector_closes_mesh_monitor(self) -> None:
+        status = MeshQualityStatus("waiting", "Waiting.", None, None, None, None, "Advisory")
+        monitor = _FakeCheckMeshMonitor(status)
+        with TemporaryCase() as case:
+            case.write("system/controlDict", "application simpleFoam;\n")
+            collector = WatcherCollector(case.path, checkmesh_monitor=monitor)
+            collector.close()
+
+        self.assertTrue(monitor.closed)
+
     def test_snapshot_bounds_unique_solver_notices_and_keeps_critical_sources(self) -> None:
         with TemporaryCase() as case:
             _populate_case(case)

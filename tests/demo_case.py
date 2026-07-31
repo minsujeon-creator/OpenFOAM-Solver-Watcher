@@ -152,6 +152,14 @@ def generate_snappy_demo_case(output: Path) -> Path:
 addLayers true;
 castellatedMeshControls { maxGlobalCells 10000000; }
 snapControls { nSolveIter 300; nRelaxIter 15; }
+addLayersControls
+{
+    layers
+    {
+        blade { nSurfaceLayers 5; }
+        hub { nSurfaceLayers 3; }
+    }
+}
 """.lstrip(),
     )
     _write(
@@ -159,6 +167,11 @@ snapControls { nSolveIter 300; nRelaxIter 15; }
         "log.snappyHexMesh",
         """
 OpenFOAM snappyHexMesh demo watcher fixture
+patch faces layers overall thickness
+                   [m] [%]
+----- ----- ------ --- ---
+blade 1000 5.0 0.0012 96.0
+hub 400 1.5 0.0008 45.0
 Castellated mesh generation
 Snapping phase
 Morph iteration 13

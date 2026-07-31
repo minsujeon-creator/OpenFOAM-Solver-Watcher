@@ -4,8 +4,9 @@ A dependency-free, single-case dashboard for watching an OpenFOAM solver or
 `snappyHexMesh` run from your browser. It automatically chooses the active
 workflow. Solver mode reports residuals, numerical convergence or transient
 health, `postProcessing` histories, and advisory quasi-steady/stationarity
-evidence. Meshing mode reports stages, phase-local progress, mesh counts, and
-warnings.
+evidence. Meshing mode reports stages, phase-local progress, mesh counts,
+surface layer coverage, and warnings. For either workflow, a stable mesh is
+checked automatically with the installed OpenFOAM `checkMesh` utility.
 
 The server listens on `127.0.0.1` only. For a solver running on another
 machine, access the dashboard through an SSH tunnel rather than exposing a web
@@ -37,6 +38,12 @@ port.
 - Responsive, accessible dashboard with no CDN or third-party web assets.
 - Live `snappyHexMesh` stage, morph/smoothing, layer, mesh-size,
   `maxGlobalCells`, warning, completion, failure, and stale evidence.
+- Automatic background `checkMesh -latestTime -allTopology -allGeometry`
+  after mesh files remain stable for 15 seconds, with `-meshQuality` added when
+  its required dictionary exists.
+- Thorough mesh geometry/topology evidence and per-patch realised-versus-
+  requested layer coverage, presented as advisories rather than guessed
+  acceptance criteria.
 
 ## Scope and non-goals
 
@@ -66,6 +73,10 @@ python3 --version
 ```
 
 Python 3.10 or newer is required.
+
+Launch the watcher from a shell where your OpenFOAM environment is sourced so
+that `checkMesh` is on `PATH`. The dashboard remains usable if the utility is
+unavailable and explains the missing environment in Mesh quality.
 
 Optionally make `foam-watch` available everywhere:
 
@@ -164,6 +175,47 @@ labelled as progress within the current phase. For example, `13/15 = 86.7%`
 means 13 morph iterations have completed; it does **not** mean 86.7% of the
 total wall-clock meshing run. The watcher does not estimate a snappyHexMesh
 ETA.
+
+When layer addition prints its final `patch faces layers overall thickness`
+table, the watcher compares each patch's average realised layer count with the
+matching `nSurfaceLayers` entry in `addLayersControls.layers`. Exact names are
+preferred and OpenFOAM-style regex selectors are supported. The table also
+shows average thickness and the printed realised/wanted thickness percentage.
+`met`, `partial`, and `missing` refer only to that reported patch average; they
+do not prove that every face has the requested layers or that the near-wall
+resolution is suitable.
+
+### Mesh quality
+
+The Mesh quality view is available for solver and meshing workflows. The
+watcher observes the core undecomposed `polyMesh` files and automatically runs
+one background assessment after their size and modification signature remains
+unchanged for 15 seconds:
+
+```bash
+checkMesh -latestTime -allTopology -allGeometry
+```
+
+When `system/meshQualityDict` exists, the watcher automatically appends
+`-meshQuality` to apply those user-defined criteria. OpenFOAM requires that
+dictionary for the option, so omitting the flag when the file is absent avoids
+turning an otherwise valid thorough check into a fatal missing-file error.
+
+It never starts the check while active `snappyHexMesh` evidence says the mesh
+is being generated. A later mesh or `meshQualityDict` change schedules one new
+check after another stable interval; unchanged inputs are not checked
+repeatedly. Only one `checkMesh` child can run at a time.
+
+The view retains the authoritative `Mesh OK` or failed-check count, command
+exit status, mesh dimensions and regions, explicitly printed geometry metrics,
+problem-face/cell counts, and a bounded tail of the utility output. Individual
+metrics are marked passing or failing only when `checkMesh` provides that
+evidence. The watcher does not invent a universal quality threshold.
+
+The invocation is read-only: it does not pass `-writeSets` or
+`-writeSurfaces`. It also does not guess an MPI command. If a case contains
+only `processor*` meshes, reconstruct an undecomposed mesh before using the
+automatic check. Version 0.1 checks the default-region undecomposed mesh.
 
 ### Numerical convergence
 
@@ -285,6 +337,14 @@ without claiming convergence.
 Confirm that the solver or function objects are still writing, that simulation
 time is advancing, and that the selected log is current. Stale physical series
 cannot produce a passing aggregate state.
+
+### Mesh quality says unavailable
+
+If the dashboard says `checkMesh` is not on `PATH`, stop the watcher, source
+the OpenFOAM environment used for the case, and start it again from that
+shell. If it reports a decomposed-only mesh, reconstruct the case first using
+the reconstruction workflow appropriate to your OpenFOAM version. The watcher
+intentionally does not run MPI or reconstruct case data.
 
 ### Port is occupied
 

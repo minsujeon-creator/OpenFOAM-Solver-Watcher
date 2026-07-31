@@ -11,6 +11,7 @@ import time
 from typing import Callable, Mapping, Sequence, TypeVar
 
 from watcher.case_config import inspect_case
+from watcher.checkmesh import CheckMeshMonitor
 from watcher.convergence import evaluate_numerics
 from watcher.log_parser import OpenFOAMLogParser
 from watcher.log_reader import IncrementalLogReader, discover_logs
@@ -50,7 +51,13 @@ _Record = TypeVar("_Record")
 class WatcherCollector:
     """Assemble one advisory, JSON-safe view of an OpenFOAM case."""
 
-    def __init__(self, case_dir: Path, explicit_log: Path | None = None) -> None:
+    def __init__(
+        self,
+        case_dir: Path,
+        explicit_log: Path | None = None,
+        *,
+        checkmesh_monitor: CheckMeshMonitor | None = None,
+    ) -> None:
         self.inspection = inspect_case(case_dir)
         self.case_dir = self.inspection.case_dir
         self.explicit_log = explicit_log
@@ -63,6 +70,7 @@ class WatcherCollector:
         self._series: dict[str, SeriesData] = {}
         self._post_notices: tuple[dict[str, object], ...] = ()
         self._config = load_config(self.case_dir).config
+        self._checkmesh_monitor = checkmesh_monitor or CheckMeshMonitor(self.case_dir)
 
     def snapshot(self) -> dict[str, object]:
         now = time.time()
@@ -85,6 +93,15 @@ class WatcherCollector:
             else evaluate_numerics(self.inspection, telemetry)
         )
         process = self._process_model(selected, telemetry, snappy, now)
+        mesh_quality = self._checkmesh_monitor.update(
+            mesh_busy=(
+                _matching_process(self.case_dir, "snappyHexMesh") is not None
+                or (
+                    self._selected_workflow == "snappy_hex_mesh"
+                    and process["state"] == "running"
+                )
+            )
+        )
 
         notices = list(self._post_notices)
         notices.extend(
@@ -156,8 +173,12 @@ class WatcherCollector:
                 "selectedLog": selected.relative_path if selected is not None else None,
             },
             "meshing": self._meshing_model(snappy),
+            "meshQuality": to_json_safe(mesh_quality),
         }
         return to_json_safe(model)  # type: ignore[return-value]
+
+    def close(self) -> None:
+        self._checkmesh_monitor.close()
 
     def series(self, series_id: str, limit: int = _SERIES_LIMIT) -> dict[str, object]:
         if type(limit) is not int or limit <= 0:

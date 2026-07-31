@@ -465,6 +465,14 @@ class _ServerState(ThreadingHTTPServer):
         request.settimeout(CONNECTION_TIMEOUT_SECONDS)
         return request, client_address
 
+    def server_close(self) -> None:
+        collector = getattr(self, "collector", None)
+        close = getattr(collector, "close", None)
+        if callable(close):
+            with self.collector_lock:
+                close()
+        super().server_close()
+
     def process_request(
         self,
         request: socket.socket,

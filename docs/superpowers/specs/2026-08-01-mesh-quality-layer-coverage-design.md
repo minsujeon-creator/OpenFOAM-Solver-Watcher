@@ -29,8 +29,14 @@ No arbitrary engineering acceptance threshold is invented. The watcher explains 
 The watcher resolves `checkMesh` from the environment in which the server was launched. For a complete undecomposed `polyMesh`, it observes the core files (`points`, `faces`, `owner`, `neighbour`, and `boundary`) and waits until their size and modification signature has remained unchanged for 15 seconds. It then starts exactly one background process:
 
 ```text
-checkMesh -latestTime -allTopology -allGeometry -meshQuality
+checkMesh -latestTime -allTopology -allGeometry
 ```
+
+If `system/meshQualityDict` exists, `-meshQuality` is appended so the
+user-defined criteria are checked. Without that required dictionary the base
+all-topology/all-geometry command is the best valid thorough check. The
+dictionary's size and modification time join the mesh signature so a changed
+criterion set schedules a fresh assessment.
 
 The command is executed as an argument list with `shell=False`, the case as its working directory, stdout and stderr captured together, and no write options. The watcher does not use `-writeSets`, `-writeSurfaces`, or launch MPI. If only decomposed processor meshes exist, it advises reconstruction rather than guessing a parallel invocation. A changed stable mesh schedules one new check; an unchanged mesh is never checked repeatedly.
 
@@ -78,4 +84,3 @@ The existing collector owns a `CheckMeshMonitor`. Each snapshot updates the mesh
 ## Verification
 
 Tests use only standard-library fakes and fixtures. They cover both common output dialects, passing and failing metrics, layer-table parsing, requested-layer matching, stability/defer/rerun scheduling, command construction without a shell, snapshot JSON, shutdown, and dashboard contracts. The complete existing suite must remain green.
-

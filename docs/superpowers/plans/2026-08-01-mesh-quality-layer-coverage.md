@@ -43,7 +43,7 @@
 - Modify: `watcher/checkmesh.py`
 - Modify: `tests/test_checkmesh.py`
 
-1. Add fake-clock, fake-signature, and fake-process tests for startup stability, active-mesher deferral, exact argument-list construction, no-shell execution, one-run-at-a-time, mesh-change rerun, missing command, decomposed-only mesh, and clean termination.
+1. Add fake-clock, fake-signature, and fake-process tests for startup stability, active-mesher deferral, exact argument-list construction (including conditional `-meshQuality`), no-shell execution, one-run-at-a-time, mesh-change rerun, missing command, decomposed-only mesh, and clean termination.
 2. Confirm focused failures before implementation.
 3. Implement `mesh_signature()` and `CheckMeshMonitor` with a lock, one daemon worker, bounded output, and `close()`.
 4. Re-run focused tests and inspect all subprocess arguments in assertions.
@@ -87,4 +87,3 @@
 3. Inspect `git diff --check`, `git diff --stat`, and the final diff for unbounded output, unsafe subprocess use, or invented engineering thresholds.
 4. Request a focused code review and resolve substantive findings test-first.
 5. Re-run the complete verification suite, confirm a clean expected worktree, and commit the completed feature.
-

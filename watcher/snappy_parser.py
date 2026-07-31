@@ -5,7 +5,15 @@ from pathlib import Path
 import re
 
 from watcher.case_config import parse_foam_file
-from watcher.models import FailureRecord, LogChunk, SnappySettings, SnappyTelemetry
+from watcher.models import (
+    FailureRecord,
+    LayerCoverageReport,
+    LayerCoverageRow,
+    LayerRequest,
+    LogChunk,
+    SnappySettings,
+    SnappyTelemetry,
+)
 
 
 _NUMBER = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?"
@@ -50,6 +58,8 @@ _MAX_GLOBAL = re.compile(
     r"\bmaxGlobalCells\b.*\b(?:reached|exceeded|stopp(?:ed|ing))\b",
     re.IGNORECASE,
 )
+_LAYER_TABLE_HEADER = re.compile(r"^patch\s+faces\s+layers\s+overall\s+thickness$", re.IGNORECASE)
+_PROCESSOR_PREFIX = re.compile(r"^\[\d+\]\s*")
 
 
 def read_snappy_settings(case_dir: Path) -> SnappySettings:
@@ -58,6 +68,9 @@ def read_snappy_settings(case_dir: Path) -> SnappySettings:
     data, notices = parse_foam_file(resolved / "system" / "snappyHexMeshDict", resolved)
     snap = data.get("snapControls")
     castellated = data.get("castellatedMeshControls")
+    layer_controls = data.get("addLayersControls")
+    if not isinstance(layer_controls, dict):
+        layer_controls = data.get("addLayerControls")
     snap_dict = snap if isinstance(snap, dict) else {}
     castellated_dict = castellated if isinstance(castellated, dict) else {}
     add_layers = _boolean(data.get("addLayers"))
@@ -67,6 +80,7 @@ def read_snappy_settings(case_dir: Path) -> SnappySettings:
         n_relax_iter=_integer(snap_dict.get("nRelaxIter")),
         max_global_cells=_integer(castellated_dict.get("maxGlobalCells")),
         stage_count=2 if add_layers is False else 3,
+        layer_requests=_layer_requests(layer_controls),
         notices=notices,
     )
 
@@ -123,6 +137,7 @@ class SnappyHexMeshParser:
             failure=self._failure,
             notices=tuple(self._notices),
             notice_count=self._notice_count,
+            layer_coverage=self._layer_coverage(),
         )
 
     def _reset_run(self) -> None:
@@ -141,10 +156,46 @@ class SnappyHexMeshParser:
         self._failure: FailureRecord | None = None
         self._notices: list[str] = list(self.settings.notices)
         self._notice_count = len(self._notices)
+        self._layer_table_active = False
+        self._layer_rows: list[tuple[str, int, float, float, float]] = []
+        self._pending_layer_rows: list[tuple[str, int, float, float, float]] = []
 
     def _feed_line(self, line: str) -> None:
         if not line:
             return
+        unprefixed = _PROCESSOR_PREFIX.sub("", line).strip()
+        if _LAYER_TABLE_HEADER.match(unprefixed):
+            if self._layer_table_active and self._pending_layer_rows:
+                self._layer_rows = list(self._pending_layer_rows)
+            self._layer_table_active = True
+            self._pending_layer_rows = []
+            return
+        if self._layer_table_active:
+            if unprefixed.startswith("[") or set(unprefixed) <= {"-", " "}:
+                return
+            parts = unprefixed.split()
+            if len(parts) >= 5:
+                try:
+                    row = (
+                        " ".join(parts[:-4]),
+                        int(parts[-4]),
+                        float(parts[-3]),
+                        float(parts[-2]),
+                        float(parts[-1]),
+                    )
+                except ValueError:
+                    pass
+                else:
+                    if all(math.isfinite(value) for value in row[2:]):
+                        self._pending_layer_rows.append(row)
+                        return
+            if _looks_like_partial_layer_row(parts):
+                self._pending_layer_rows = []
+                self._layer_table_active = False
+                return
+            if self._pending_layer_rows:
+                self._layer_rows = list(self._pending_layer_rows)
+            self._layer_table_active = False
         for label, pattern in _FATAL:
             if pattern.search(line):
                 self._failure = FailureRecord(label, line, self._current_segment, None)
@@ -191,6 +242,90 @@ class SnappyHexMeshParser:
         if timing:
             self._execution_seconds = float(timing.group("execution"))
             self._clock_seconds = float(timing.group("clock"))
+
+    def _layer_coverage(self) -> LayerCoverageReport:
+        rows: list[LayerCoverageRow] = []
+        for patch, faces, average_layers, average_thickness, thickness_percent in self._layer_rows:
+            request = _match_layer_request(patch, self.settings.layer_requests)
+            requested = request.requested_layers if request is not None else None
+            fraction = average_layers / requested if requested is not None and requested > 0 else None
+            if requested is None:
+                status = "unknown"
+                summary = "No matching nSurfaceLayers request was found."
+            elif requested == 0:
+                status = "not_requested"
+                summary = "No surface layers were requested for this patch."
+            elif average_layers <= 0.0:
+                status = "missing"
+                summary = f"No average layers were realised from {requested} requested."
+            elif average_layers + 1e-9 < requested:
+                status = "partial"
+                summary = f"Average realised layers {average_layers:g} are below {requested} requested."
+            else:
+                status = "met"
+                summary = f"Average realised layers reach the {requested} requested."
+            rows.append(
+                LayerCoverageRow(
+                    patch=patch,
+                    faces=faces,
+                    average_layers=average_layers,
+                    average_thickness=average_thickness,
+                    thickness_percent=thickness_percent,
+                    requested_layers=requested,
+                    matched_selector=request.selector if request is not None else None,
+                    layer_fraction=fraction,
+                    status=status,
+                    summary=summary,
+                )
+            )
+        row_states = {row.status for row in rows}
+        matched_selectors = {
+            row.matched_selector for row in rows if row.matched_selector is not None
+        }
+        unmatched_selectors = tuple(
+            request.selector
+            for request in self.settings.layer_requests
+            if request.requested_layers > 0 and request.selector not in matched_selectors
+        )
+        unmatched_note = (
+            f" {len(unmatched_selectors)} configured layer selector(s) were not present in the reported table."
+            if unmatched_selectors
+            else ""
+        )
+        if not rows:
+            if self.settings.add_layers is False:
+                status = "not_configured"
+                summary = "Layer addition is disabled."
+            else:
+                status = "unavailable"
+                summary = "No completed snappyHexMesh layer-coverage table has been parsed yet."
+        elif "missing" in row_states:
+            status = "missing"
+            summary = "At least one requested surface reports zero average realised layers." + unmatched_note
+        elif "partial" in row_states:
+            status = "partial"
+            summary = "At least one surface has fewer average realised layers than requested." + unmatched_note
+        elif unmatched_selectors:
+            status = "unknown"
+            summary = "Reported rows meet their matching requests, but configured selectors are absent from the table." + unmatched_note
+        elif row_states <= {"met", "not_requested"}:
+            status = "met"
+            summary = "Reported average layer counts meet the matching requests."
+        else:
+            status = "unknown"
+            summary = "Layer coverage was reported, but not every patch matched a layer request."
+        return LayerCoverageReport(
+            status=status,
+            summary=summary,
+            rows=tuple(rows),
+            requested_patch_count=len(self.settings.layer_requests),
+            reported_patch_count=len(rows),
+            unmatched_selectors=unmatched_selectors,
+            advisory=(
+                "Patch averages do not show where individual layers collapsed; interpret coverage "
+                "together with the geometry and intended near-wall resolution."
+            ),
+        )
 
     def _set_stage(self, stage: str) -> bool:
         order = {
@@ -250,6 +385,48 @@ def _boolean(value: object) -> bool | None:
         if lowered in {"false", "no", "off"}:
             return False
     return None
+
+
+def _layer_requests(layer_controls: object) -> tuple[LayerRequest, ...]:
+    if not isinstance(layer_controls, dict):
+        return ()
+    layers = layer_controls.get("layers")
+    if not isinstance(layers, dict):
+        return ()
+    requests: list[LayerRequest] = []
+    for selector, settings in layers.items():
+        if not isinstance(selector, str) or not isinstance(settings, dict):
+            continue
+        requested = _integer(settings.get("nSurfaceLayers"))
+        if requested is not None:
+            requests.append(LayerRequest(selector, requested))
+    return tuple(requests)
+
+
+def _match_layer_request(patch: str, requests: tuple[LayerRequest, ...]) -> LayerRequest | None:
+    exact = next((request for request in requests if request.selector == patch), None)
+    if exact is not None:
+        return exact
+    for request in requests:
+        try:
+            if re.fullmatch(request.selector, patch):
+                return request
+        except re.error:
+            continue
+    return None
+
+
+def _looks_like_partial_layer_row(parts: list[str]) -> bool:
+    numeric_suffix = 0
+    for value in reversed(parts):
+        try:
+            number = float(value)
+        except ValueError:
+            break
+        if not math.isfinite(number):
+            break
+        numeric_suffix += 1
+    return 2 <= numeric_suffix < 4
 
 
 def _append_bounded(values: list[str], value: str, limit: int = 200) -> None:
