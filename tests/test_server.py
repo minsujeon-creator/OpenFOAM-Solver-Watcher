@@ -67,6 +67,24 @@ class BlockingCollector:
 
 
 class ServerTests(TestCase):
+    def test_server_close_closes_collector_when_supported(self) -> None:
+        class CloseAwareCollector(BlockingCollector):
+            def __init__(self) -> None:
+                super().__init__()
+                self.closed = False
+
+            def close(self) -> None:
+                self.closed = True
+
+        collector = CloseAwareCollector()
+        self.server.collector = collector
+
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+
+        self.assertTrue(collector.closed)
+
     def setUp(self) -> None:
         self.case = TemporaryCase()
         self.case.__enter__()

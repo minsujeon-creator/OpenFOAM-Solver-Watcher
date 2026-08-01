@@ -26,6 +26,8 @@ The watcher reads:
   inspection;
 - solver log files selected inside the case;
 - text files below `postProcessing/`;
+- core files in the latest complete undecomposed `polyMesh` to detect a stable
+  mesh signature;
 - limited read-only process information from `/proc` when available.
 
 The only case file it may create or replace is:
@@ -36,6 +38,23 @@ The only case file it may create or replace is:
 
 Configuration is schema-validated and written atomically. The watcher does not
 edit OpenFOAM dictionaries or result data.
+
+After mesh files remain unchanged for 15 seconds, the watcher may launch the
+OpenFOAM `checkMesh` executable found on `PATH` with a fixed argument list:
+
+```text
+checkMesh -latestTime -allTopology -allGeometry
+```
+
+The fixed `-meshQuality` flag is appended only when
+`system/meshQualityDict` exists, because OpenFOAM treats that dictionary as a
+required input for the option.
+
+It uses no shell, user-supplied command fragments, MPI launcher, `-writeSets`,
+or `-writeSurfaces`. Output is captured with a fixed in-memory retention bound,
+only one owned child is allowed at a time, and shutdown terminates that child
+if necessary. The OpenFOAM installation and case remain inside the same-user
+trust boundary.
 
 ## No solver control
 
@@ -73,4 +92,3 @@ vulnerability-reporting feature if it is enabled. Otherwise contact
 
 Please omit confidential case data, solver logs, credentials, and hostnames
 unless they are strictly required and safe to share.
-

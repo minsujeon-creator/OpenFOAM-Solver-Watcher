@@ -3,6 +3,8 @@
 
   const VIEW_IDS = [
     "overview-view",
+    "meshing-view",
+    "mesh-quality-view",
     "residuals-view",
     "transient-view",
     "physical-view",
@@ -89,11 +91,11 @@
   function toneFor(value) {
     const normalized = String(value || "").toLowerCase();
     if (
-      ["running", "completed", "passing", "converged", "healthy", "plateau", "periodic", "statistically_stationary"].includes(normalized)
+      ["running", "completed", "passing", "met", "converged", "healthy", "plateau", "periodic", "statistically_stationary"].includes(normalized)
     ) {
       return "good";
     }
-    if (["failed", "diverged", "unhealthy", "error"].includes(normalized)) {
+    if (["failed", "failing", "missing", "diverged", "unhealthy", "error"].includes(normalized)) {
       return "bad";
     }
     return "warning";
@@ -263,21 +265,31 @@
     return state.refreshPromise;
   }
 
-  function updateTransientVisibility(snapshot) {
+  function updateWorkflowVisibility(snapshot) {
+    const meshing = snapshot.workflow && snapshot.workflow.kind === "snappy_hex_mesh";
     const mode = String(snapshot.case && snapshot.case.mode || "");
     const transient = mode.includes("transient") || mode.includes("pimple") || mode.includes("piso");
-    const tab = byId("tab-transient");
-    tab.hidden = !transient;
-    if (!transient && state.activeView === "transient-view") {
+    byId("tab-meshing").hidden = !meshing;
+    for (const id of ["tab-overview", "tab-residuals", "tab-physical", "tab-stationarity"]) {
+      byId(id).hidden = meshing;
+    }
+    byId("tab-transient").hidden = meshing || !transient;
+    if (meshing && !["meshing-view", "mesh-quality-view", "diagnostics-view"].includes(state.activeView)) {
+      activateView("meshing-view", true);
+    } else if (!meshing && state.activeView === "meshing-view") {
+      activateView("overview-view", true);
+    } else if (!meshing && !transient && state.activeView === "transient-view") {
       activateView("overview-view", true);
     }
   }
 
   function renderSnapshot(snapshot) {
-    updateTransientVisibility(snapshot);
+    updateWorkflowVisibility(snapshot);
     renderHeader(snapshot);
     renderCards(snapshot);
     renderOverview(snapshot);
+    renderMeshing(snapshot);
+    renderMeshQuality(snapshot);
     renderResiduals(snapshot);
     renderTransient(snapshot);
     renderPhysical(snapshot);
@@ -289,11 +301,12 @@
 
   function renderHeader(snapshot) {
     const caseData = snapshot.case || {};
+    const meshing = snapshot.workflow && snapshot.workflow.kind === "snappy_hex_mesh";
     byId("case-name").textContent = baseName(caseData.caseDir);
-    const application = caseData.application || "Unknown solver";
+    const application = meshing ? "snappyHexMesh" : caseData.application || "Unknown solver";
     const version = caseData.openfoamVersion ? ` · ${caseData.openfoamVersion}` : "";
     byId("application-version").textContent = `${application}${version}`;
-    byId("mode-label").textContent = titleCase(caseData.mode);
+    byId("mode-label").textContent = meshing ? "Meshing" : titleCase(caseData.mode);
     const generated = new Date(snapshot.generatedAt);
     byId("last-refresh").textContent = Number.isNaN(generated.getTime())
       ? "Snapshot time unavailable"
@@ -309,10 +322,36 @@
 
   function renderCards(snapshot) {
     const process = snapshot.process || {};
+    const meshingWorkflow = snapshot.workflow && snapshot.workflow.kind === "snappy_hex_mesh";
     const processDetail = process.pid
       ? `PID ${process.pid} · ${process.source || "process evidence"}`
       : `${titleCase(process.source || "no source")} evidence · age ${formatDuration(process.logAgeSeconds)}`;
     setCard("card-process", titleCase(process.state), processDetail, toneFor(process.state));
+
+    if (meshingWorkflow) {
+      const meshing = snapshot.meshing || {};
+      const quality = snapshot.meshQuality || {};
+      const qualityReport = quality.report || {};
+      byId("card-numerics").querySelector(".card-kicker").textContent = "Meshing stage";
+      byId("card-physical").querySelector(".card-kicker").textContent = "Mesh quality";
+      byId("card-progress").querySelector(".card-kicker").textContent = "Phase progress";
+      const stage = finite(meshing.stageIndex)
+        ? `${titleCase(meshing.stage)} (${formatNumber(meshing.stageIndex, 0)}/${formatNumber(meshing.stageCount, 0)})`
+        : titleCase(meshing.stage || "unknown");
+      setCard("card-numerics", stage, meshing.currentWork || "No current meshing operation parsed.", toneFor(process.state));
+      const qualityState = quality.state === "completed" ? qualityReport.status || "completed" : quality.state || "waiting";
+      setCard("card-physical", titleCase(qualityState), quality.summary || "Waiting for a stable mesh.", toneFor(qualityState));
+      const phasePercent = finite(meshing.phaseProgressPercent) ? `${formatNumber(meshing.phaseProgressPercent, 1)}%` : "—";
+      const smoothing = finite(meshing.smoothingIteration)
+        ? `smoothing ${formatNumber(meshing.smoothingIteration, 0)}/${formatNumber(meshing.smoothingTotal, 0)}`
+        : "phase progress unavailable";
+      setCard("card-progress", phasePercent, `${meshing.progressScope || "Current phase"} · ${smoothing}`, finite(meshing.phaseProgressPercent) ? "good" : "warning");
+      return;
+    }
+
+    byId("card-numerics").querySelector(".card-kicker").textContent = "Numerics";
+    byId("card-physical").querySelector(".card-kicker").textContent = "Physical state";
+    byId("card-progress").querySelector(".card-kicker").textContent = "Progress / rate";
 
     const numerics = snapshot.numerics || {};
     setCard(
@@ -340,6 +379,179 @@
       percent,
       `${rate} · ETA ${formatDuration(progress.etaSeconds)}`,
       finite(progress.percent) ? "good" : "warning",
+    );
+  }
+
+  function renderMeshing(snapshot) {
+    const meshing = snapshot.meshing;
+    if (!meshing) {
+      return;
+    }
+    const process = snapshot.process || {};
+    const stagePosition = finite(meshing.stageIndex)
+      ? `${formatNumber(meshing.stageIndex, 0)}/${formatNumber(meshing.stageCount, 0)}`
+      : "position unknown";
+    byId("meshing-summary").textContent = `${titleCase(process.state)} · ${titleCase(meshing.stage)} · stage ${stagePosition}`;
+    byId("meshing-stage").textContent = `${titleCase(meshing.stage)} (${stagePosition})`;
+    byId("meshing-current-work").textContent = meshing.currentWork || "No current operation has been parsed.";
+
+    const progress = byId("meshing-progress");
+    if (finite(meshing.phaseProgressPercent)) {
+      progress.value = Math.max(0, Math.min(100, meshing.phaseProgressPercent));
+      progress.textContent = `${formatNumber(meshing.phaseProgressPercent, 1)}%`;
+    } else {
+      progress.removeAttribute("value");
+      progress.textContent = "Indeterminate";
+    }
+    const morph = finite(meshing.completedMorphIterations)
+      ? `${formatNumber(meshing.completedMorphIterations, 0)}/${formatNumber(meshing.morphTotal, 0)} morph iterations complete`
+      : "No reliable phase percentage is available";
+    byId("meshing-progress-detail").textContent = `${meshing.progressScope || "Current phase"}: ${morph}. This is not total runtime progress.`;
+
+    const settings = meshing.settings || {};
+    const settingEntries = [
+      ["Layer addition", settings.addLayers === true ? "Enabled" : settings.addLayers === false ? "Disabled" : "Unknown"],
+      ["Morph iterations", settings.nRelaxIter],
+      ["Smoothing iterations", settings.nSolveIter],
+      ["Configured maxGlobalCells", settings.maxGlobalCells],
+      ["Warnings observed", meshing.warningCount],
+      ["Execution / clock", `${formatDuration(meshing.executionSeconds)} / ${formatDuration(meshing.clockSeconds)}`],
+    ];
+    const settingNodes = [];
+    for (const [label, value] of settingEntries) {
+      settingNodes.push(element("dt", "", label), element("dd", "", value === null || value === undefined ? "—" : String(value)));
+    }
+    byId("meshing-settings").replaceChildren(...settingNodes);
+
+    const meshRow = element("tr");
+    meshRow.append(
+      tableCell(formatNumber(meshing.meshCells, 0), "number"),
+      tableCell(formatNumber(meshing.meshFaces, 0), "number"),
+      tableCell(formatNumber(meshing.meshPoints, 0), "number"),
+      tableCell(meshing.maxGlobalCellsReached ? "Reached" : "Not observed"),
+    );
+    byId("meshing-mesh-body").replaceChildren(meshRow);
+
+    const warnings = Array.isArray(meshing.warnings) ? [...meshing.warnings] : [];
+    if (meshing.failure && meshing.failure.line) {
+      warnings.unshift(`${meshing.failure.label}: ${meshing.failure.line}`);
+    }
+    if (!warnings.length) {
+      byId("meshing-warning-list").replaceChildren(element("li", "", "No meshing warnings have been parsed."));
+    } else {
+      byId("meshing-warning-list").replaceChildren(...warnings.map((warning) => element("li", "", warning)));
+    }
+
+    const coverage = meshing.layerCoverage || {};
+    byId("layer-coverage-summary").textContent = coverage.summary || "No completed layer table has been parsed.";
+    const unmatched = Array.isArray(coverage.unmatchedSelectors) ? coverage.unmatchedSelectors : [];
+    const unmatchedText = unmatched.length ? ` Unmatched selectors: ${unmatched.join(", ")}.` : "";
+    byId("layer-coverage-advisory").textContent = `${coverage.advisory || "Patch averages do not show where individual layers collapsed."}${unmatchedText}`;
+    const coverageBody = byId("layer-coverage-body");
+    const coverageRows = Array.isArray(coverage.rows) ? coverage.rows : [];
+    if (!coverageRows.length) {
+      emptyTable(coverageBody, 8, "No surface layer-coverage rows are available yet.");
+    } else {
+      coverageBody.replaceChildren(...coverageRows.map((item) => {
+        const stateCell = element("td");
+        const stateBadge = badge(item.status || "unknown");
+        stateBadge.title = item.summary || "No comparison available.";
+        stateCell.append(stateBadge);
+        const row = element("tr");
+        row.append(
+          tableCell(item.patch || "Unknown"),
+          tableCell(formatNumber(item.faces, 0), "number"),
+          tableCell(formatNumber(item.requestedLayers, 0), "number"),
+          tableCell(formatNumber(item.averageLayers, 2), "number"),
+          tableCell(finite(item.layerFraction) ? `${formatNumber(item.layerFraction * 100, 1)}%` : "—", "number"),
+          tableCell(finite(item.averageThickness) ? `${formatNumber(item.averageThickness, 6)} m` : "—", "number"),
+          tableCell(finite(item.thicknessPercent) ? `${formatNumber(item.thicknessPercent, 1)}%` : "—", "number"),
+          stateCell,
+        );
+        return row;
+      }));
+    }
+  }
+
+  function renderMeshQuality(snapshot) {
+    const quality = snapshot.meshQuality || {};
+    const report = quality.report || null;
+    const resultState = quality.state === "completed" && report ? report.status : quality.state || "waiting";
+    byId("mesh-quality-summary").textContent = `${titleCase(resultState)} · ${quality.summary || "Waiting for a complete stable mesh."}`;
+    byId("mesh-quality-advisory").textContent = quality.advisory || "Advisory only.";
+
+    const factEntries = [
+      ["Scheduler", titleCase(quality.state || "waiting")],
+      ["Mesh source", quality.meshSource],
+      ["Stable for", finite(quality.stableForSeconds) ? formatDuration(quality.stableForSeconds) : null],
+      ["Next check", finite(quality.nextCheckSeconds) ? formatDuration(quality.nextCheckSeconds) : null],
+      ["Result", report ? titleCase(report.status) : null],
+      ["Failed checks", report && report.failedChecks],
+      ["Exit code", report && report.exitCode],
+      ["Cells / faces / points", report ? `${formatNumber(report.cells, 0)} / ${formatNumber(report.faces, 0)} / ${formatNumber(report.points, 0)}` : null],
+      ["Regions", report && report.regions],
+      ["Bounding box", report && Array.isArray(report.boundingBoxMin) && Array.isArray(report.boundingBoxMax) ? `(${report.boundingBoxMin.map((value) => formatNumber(value, 6)).join(" ")}) → (${report.boundingBoxMax.map((value) => formatNumber(value, 6)).join(" ")})` : null],
+      ["Geometric directions", report && Array.isArray(report.geometricDirections) ? report.geometricDirections.join(" ") : null],
+      ["Solution directions", report && Array.isArray(report.solutionDirections) ? report.solutionDirections.join(" ") : null],
+      ["Runtime", report ? formatDuration(report.executionSeconds) : null],
+      ["Last checked", report && finite(report.finishedAt) ? new Date(report.finishedAt * 1000).toLocaleString() : null],
+      ["Command", report && Array.isArray(report.command) ? report.command.join(" ") : "Automatically selected after mesh stability"],
+    ];
+    const facts = [];
+    for (const [label, value] of factEntries) {
+      facts.push(element("dt", "", label), element("dd", "", value === null || value === undefined ? "—" : String(value)));
+    }
+    byId("mesh-quality-facts").replaceChildren(...facts);
+
+    const metricBody = byId("mesh-quality-metric-body");
+    const metrics = report && Array.isArray(report.metrics) ? report.metrics : [];
+    if (!metrics.length) {
+      emptyTable(metricBody, 5, "No geometry or topology metrics have been reported yet.");
+    } else {
+      metricBody.replaceChildren(...metrics.map((metric) => {
+        const stateCell = element("td");
+        stateCell.append(badge(metric.status || "informational"));
+        const observed = finite(metric.observed)
+          ? `${formatNumber(metric.observed, 6)}${metric.unit ? ` ${metric.unit}` : ""}`
+          : String(metric.observed ?? "—");
+        const target = finite(metric.target)
+          ? `${formatNumber(metric.target, 6)}${metric.unit ? ` ${metric.unit}` : ""}`
+          : String(metric.target ?? "Not printed");
+        const row = element("tr");
+        row.append(
+          tableCell(metric.label || metric.code || "Metric"),
+          tableCell(observed, "number"),
+          tableCell(target, "number"),
+          stateCell,
+          tableCell(metric.explanation || "No source line retained."),
+        );
+        return row;
+      }));
+    }
+
+    const problemBody = byId("mesh-quality-problem-body");
+    const problems = report && Array.isArray(report.problems) ? report.problems : [];
+    if (!problems.length) {
+      emptyTable(problemBody, 4, report ? "No explicit problem counts were reported." : "No checkMesh report is available yet.");
+    } else {
+      problemBody.replaceChildren(...problems.map((problem) => {
+        const row = element("tr");
+        row.append(
+          tableCell(problem.label || problem.code || "Problem"),
+          tableCell(formatNumber(problem.count, 0), "number"),
+          tableCell(finite(problem.limit) ? formatNumber(problem.limit, 4) : "Not printed", "number"),
+          tableCell(problem.explanation || "No source line retained."),
+        );
+        return row;
+      }));
+    }
+
+    const diagnostics = report && Array.isArray(report.diagnostics) ? report.diagnostics : [];
+    const visibleDiagnostics = diagnostics.slice(-50);
+    byId("mesh-quality-diagnostics").replaceChildren(
+      ...(visibleDiagnostics.length
+        ? visibleDiagnostics.map((line) => element("li", "", line))
+        : [element("li", "", "No checkMesh output has been captured yet.")]),
     );
   }
 
@@ -868,6 +1080,7 @@
       ["CPU count", snapshot.host && snapshot.host.cpuCount],
       ["Load average", Array.isArray(snapshot.host && snapshot.host.loadAverage) ? snapshot.host.loadAverage.map((value) => formatNumber(value, 2)).join(" / ") : null],
       ["Selected log", snapshot.logSelection && snapshot.logSelection.selected],
+      ["Workflow", snapshot.workflow && snapshot.workflow.label],
       ["Current segment", snapshot.solver && snapshot.solver.currentSegment],
       ["Residual samples", snapshot.solver && snapshot.solver.residualCount],
       ["Time-step samples", snapshot.solver && snapshot.solver.timeStepCount],
@@ -897,7 +1110,7 @@
     const logBody = byId("diagnostic-log-body");
     const candidates = snapshot.logSelection && snapshot.logSelection.candidates;
     if (!Array.isArray(candidates) || !candidates.length) {
-      emptyTable(logBody, 4, "No solver log candidates were found.");
+      emptyTable(logBody, 5, "No OpenFOAM log candidates were found.");
       return;
     }
     const selected = snapshot.logSelection.selected;
@@ -907,6 +1120,7 @@
       row.append(
         tableCell(candidate.relativePath === selected ? "Yes" : "No"),
         tableCell(candidate.relativePath || "Unknown"),
+        tableCell(titleCase(candidate.workflow || "unknown")),
         tableCell(formatNumber(candidate.score, 0), "number"),
         tableCell(reasons),
       );

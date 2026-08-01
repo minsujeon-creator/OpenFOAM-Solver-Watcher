@@ -133,14 +133,77 @@ PIMPLE
     return output
 
 
+def generate_snappy_demo_case(output: Path) -> Path:
+    """Create a deterministic live-looking snappyHexMesh dashboard fixture."""
+    output = Path(output)
+    if output.exists() and any(output.iterdir()):
+        raise FileExistsError(f"Demo output directory is not empty: {output}")
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "constant").mkdir(exist_ok=True)
+    _write(
+        output,
+        "system/controlDict",
+        "application simpleFoam; startTime 0; endTime 1; deltaT 1;\n",
+    )
+    _write(
+        output,
+        "system/snappyHexMeshDict",
+        """
+addLayers true;
+castellatedMeshControls { maxGlobalCells 10000000; }
+snapControls { nSolveIter 300; nRelaxIter 15; }
+addLayersControls
+{
+    layers
+    {
+        blade { nSurfaceLayers 5; }
+        hub { nSurfaceLayers 3; }
+    }
+}
+""".lstrip(),
+    )
+    _write(
+        output,
+        "log.snappyHexMesh",
+        """
+OpenFOAM snappyHexMesh demo watcher fixture
+patch faces layers overall thickness
+                   [m] [%]
+----- ----- ------ --- ---
+blade 1000 5.0 0.0012 96.0
+hub 400 1.5 0.0008 45.0
+Castellated mesh generation
+Snapping phase
+Morph iteration 13
+Smoothing displacement iteration 180
+cells: 8903300
+faces: 27984450
+points: 10191464
+--> FOAM Warning : maxGlobalCells 10000000 reached; further refinement stopped
+ExecutionTime = 42 s  ClockTime = 45 s
+""".lstrip(),
+    )
+    return output
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Generate a deterministic OpenFOAM Solver Watcher demo case.",
     )
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--workflow",
+        choices=("solver", "snappy"),
+        default="solver",
+        help="dashboard workflow to demonstrate (default: solver)",
+    )
     arguments = parser.parse_args(argv)
     try:
-        generated = generate_demo_case(arguments.output)
+        generated = (
+            generate_snappy_demo_case(arguments.output)
+            if arguments.workflow == "snappy"
+            else generate_demo_case(arguments.output)
+        )
     except (FileExistsError, OSError, ValueError) as error:
         parser.error(str(error))
     print(generated)

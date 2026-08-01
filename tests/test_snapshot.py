@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from tests.helpers import TemporaryCase
 from watcher.persistence import ConfigValidationError, save_config
-from watcher.models import SeriesOverride, WatcherConfig, to_json_safe
+from watcher.models import MeshQualityStatus, SeriesOverride, WatcherConfig, to_json_safe
 from watcher.snapshot import WatcherCollector
 
 
@@ -28,7 +28,24 @@ EXPECTED_TOP_LEVEL = {
     "logSelection",
     "notices",
     "configuration",
+    "workflow",
+    "meshing",
+    "meshQuality",
 }
+
+
+class _FakeCheckMeshMonitor:
+    def __init__(self, status: MeshQualityStatus) -> None:
+        self.status = status
+        self.busy_values: list[bool] = []
+        self.closed = False
+
+    def update(self, *, mesh_busy: bool) -> MeshQualityStatus:
+        self.busy_values.append(mesh_busy)
+        return self.status
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def _populate_case(case: TemporaryCase, *, end_time: float = 1.0) -> None:
@@ -77,6 +94,82 @@ def _old(path: Path) -> None:
 
 
 class SnapshotIntegrationTests(TestCase):
+    def test_snapshot_exposes_mesh_quality_and_layer_coverage(self) -> None:
+        status = MeshQualityStatus(
+            state="stabilizing",
+            summary="Mesh changed; waiting for stable files.",
+            mesh_source="constant/polyMesh",
+            stable_for_seconds=4.0,
+            next_check_seconds=11.0,
+            report=None,
+            advisory="Advisory only.",
+        )
+        monitor = _FakeCheckMeshMonitor(status)
+        with TemporaryCase() as case:
+            case.write("system/controlDict", "application simpleFoam;\n")
+            case.write("system/snappyHexMeshDict", "addLayers true;\n")
+            case.write(
+                "log.snappyHexMesh",
+                """\
+patch faces layers overall thickness
+[m] [%]
+wall 100 2 0.001 80
+End
+""",
+            )
+            snapshot = WatcherCollector(
+                case.path,
+                checkmesh_monitor=monitor,
+            ).snapshot()
+
+        self.assertEqual(snapshot["meshQuality"]["state"], "stabilizing")
+        self.assertEqual(snapshot["meshQuality"]["meshSource"], "constant/polyMesh")
+        self.assertEqual(snapshot["meshing"]["layerCoverage"]["reportedPatchCount"], 1)
+        self.assertEqual(snapshot["meshing"]["layerCoverage"]["rows"][0]["patch"], "wall")
+        self.assertEqual(monitor.busy_values, [False])
+
+    def test_active_snappy_workflow_defers_automatic_mesh_check(self) -> None:
+        status = MeshQualityStatus("deferred", "Mesher active.", None, 0.0, None, None, "Advisory")
+        monitor = _FakeCheckMeshMonitor(status)
+        with TemporaryCase() as case:
+            case.write("system/controlDict", "application simpleFoam;\n")
+            case.write("system/snappyHexMeshDict", "addLayers true;\n")
+            case.write("log.snappyHexMesh", "Morph iteration 2\n")
+
+            WatcherCollector(case.path, checkmesh_monitor=monitor).snapshot()
+
+        self.assertEqual(monitor.busy_values, [True])
+
+    def test_active_snappy_process_defers_check_even_when_solver_log_is_explicit(self) -> None:
+        status = MeshQualityStatus("deferred", "Mesher active.", None, 0.0, None, None, "Advisory")
+        monitor = _FakeCheckMeshMonitor(status)
+        with TemporaryCase() as case:
+            _populate_case(case)
+
+            def process_match(_case_dir: Path, application: str | None):
+                if application == "snappyHexMesh":
+                    return 4321, "snappyHexMesh -overwrite"
+                return None
+
+            with patch("watcher.snapshot._matching_process", side_effect=process_match):
+                WatcherCollector(
+                    case.path,
+                    explicit_log=case.path / "log.pimpleFoam",
+                    checkmesh_monitor=monitor,
+                ).snapshot()
+
+        self.assertEqual(monitor.busy_values, [True])
+
+    def test_collector_closes_mesh_monitor(self) -> None:
+        status = MeshQualityStatus("waiting", "Waiting.", None, None, None, None, "Advisory")
+        monitor = _FakeCheckMeshMonitor(status)
+        with TemporaryCase() as case:
+            case.write("system/controlDict", "application simpleFoam;\n")
+            collector = WatcherCollector(case.path, checkmesh_monitor=monitor)
+            collector.close()
+
+        self.assertTrue(monitor.closed)
+
     def test_snapshot_bounds_unique_solver_notices_and_keeps_critical_sources(self) -> None:
         with TemporaryCase() as case:
             _populate_case(case)
@@ -113,6 +206,22 @@ class SnapshotIntegrationTests(TestCase):
             )
         )
         self.assertLess(len(json.dumps(snapshot, allow_nan=False)), 250_000)
+
+    def test_snapshot_counts_snappy_notices_omitted_by_parser_bound(self) -> None:
+        with TemporaryCase() as case:
+            case.write("system/controlDict", "application simpleFoam;\n")
+            case.write("system/snappyHexMeshDict", "addLayers false;\n")
+            warnings = "\n".join(
+                f"maxGlobalCells {index} reached; refinement stopped"
+                for index in range(250)
+            )
+            case.write("log.snappyHexMesh", warnings + "\n")
+
+            snapshot = WatcherCollector(case.path).snapshot()
+
+        self.assertEqual(snapshot["meshing"]["noticeCount"], 250)
+        self.assertGreaterEqual(snapshot["solver"]["snapshotNoticeCount"], 250)
+        self.assertTrue(snapshot["solver"]["snapshotNoticesTruncated"])
 
     def test_snapshot_bounds_long_solver_histories_and_payload_growth(self) -> None:
         def records(start: int, stop: int, spike_at: int) -> str:
@@ -169,7 +278,82 @@ class SnapshotIntegrationTests(TestCase):
         self.assertEqual(snapshot["numerics"]["kind"], "transient_health")
         self.assertNotEqual(snapshot["physical"]["aggregate"]["state"], "passing")
         self.assertTrue(snapshot["seriesCatalog"])
+        self.assertEqual(snapshot["workflow"]["kind"], "solver")
+        self.assertIsNone(snapshot["meshing"])
         json.dumps(snapshot, allow_nan=False)
+
+    def test_snapshot_automatically_selects_fresh_snappy_workflow(self) -> None:
+        with TemporaryCase() as case:
+            _populate_case(case)
+            case.write(
+                "system/snappyHexMeshDict",
+                "addLayers true; snapControls { nSolveIter 300; nRelaxIter 15; }\n",
+            )
+            case.write(
+                "log.snappyHexMesh",
+                "Snapping phase\nMorph iteration 13\nSmoothing displacement iteration 180\n",
+            )
+            case.touch("log.snappyHexMesh", seconds_after=5)
+
+            snapshot = WatcherCollector(case.path).snapshot()
+
+        self.assertEqual(snapshot["workflow"]["kind"], "snappy_hex_mesh")
+        self.assertEqual(snapshot["logSelection"]["selected"], "log.snappyHexMesh")
+        self.assertEqual(snapshot["meshing"]["stage"], "snapping")
+        self.assertAlmostEqual(snapshot["meshing"]["phaseProgressPercent"], 13 / 15 * 100)
+        self.assertEqual(snapshot["numerics"]["kind"], "not_applicable")
+        self.assertEqual(snapshot["numerics"]["status"], "not_applicable")
+        self.assertIsNone(snapshot["solver"]["currentTime"])
+        json.dumps(snapshot, allow_nan=False)
+
+    def test_collector_switches_between_snappy_and_solver_parsers(self) -> None:
+        with TemporaryCase() as case:
+            _populate_case(case)
+            case.write("system/snappyHexMeshDict", "addLayers false;\n")
+            case.write("log.snappyHexMesh", "Morph iteration 2\n")
+            case.touch("log.snappyHexMesh", seconds_after=5)
+            collector = WatcherCollector(case.path)
+            meshing = collector.snapshot()
+
+            case.touch("log.pimpleFoam", seconds_after=10)
+            solving = collector.snapshot()
+
+        self.assertEqual(meshing["workflow"]["kind"], "snappy_hex_mesh")
+        self.assertEqual(solving["workflow"]["kind"], "solver")
+        self.assertIsNone(solving["meshing"])
+        self.assertEqual(solving["solver"]["currentTime"], 0.25)
+
+    def test_snappy_process_state_distinguishes_completed_failed_and_stale(self) -> None:
+        snapshots = []
+        for content, make_old in (
+            ("Snapping phase\nEnd\n", False),
+            ("Snapping phase\nFOAM FATAL ERROR:\n", False),
+            ("Snapping phase\nMorph iteration 1\n", True),
+        ):
+            with TemporaryCase() as case:
+                case.write("system/controlDict", "application simpleFoam;\n")
+                case.write("system/snappyHexMeshDict", "addLayers false;\n")
+                log = case.write("log.snappyHexMesh", content)
+                if make_old:
+                    _old(log)
+                    older = time.time() - 400.0
+                    os.utime(log, (older, older))
+                snapshots.append(WatcherCollector(case.path).snapshot())
+
+        self.assertEqual(snapshots[0]["process"]["state"], "completed")
+        self.assertEqual(snapshots[1]["process"]["state"], "failed")
+        self.assertEqual(snapshots[2]["process"]["state"], "stale")
+
+    def test_snappy_log_remains_running_until_five_minute_stale_threshold(self) -> None:
+        with TemporaryCase() as case:
+            case.write("system/controlDict", "application simpleFoam;\n")
+            case.write("system/snappyHexMeshDict", "addLayers false;\n")
+            log = case.write("log.snappyHexMesh", "Snapping phase\nMorph iteration 1\n")
+            _old(log)
+
+            snapshot = WatcherCollector(case.path).snapshot()
+
+        self.assertEqual(snapshot["process"]["state"], "running")
 
     def test_constructs_case_inspection_only_once(self) -> None:
         with TemporaryCase() as case:

@@ -69,6 +69,8 @@
     <nav class="view-navigation" aria-label="Dashboard views">
       <div id="view-tabs" class="tabs" role="tablist" aria-label="Case monitoring views">
         <button id="tab-overview" role="tab" aria-controls="overview-view" aria-selected="true" tabindex="0" type="button">Overview</button>
+        <button id="tab-meshing" role="tab" aria-controls="meshing-view" aria-selected="false" tabindex="-1" type="button" hidden>Meshing</button>
+        <button id="tab-mesh-quality" role="tab" aria-controls="mesh-quality-view" aria-selected="false" tabindex="-1" type="button">Mesh quality</button>
         <button id="tab-residuals" role="tab" aria-controls="residuals-view" aria-selected="false" tabindex="-1" type="button">Residuals</button>
         <button id="tab-transient" role="tab" aria-controls="transient-view" aria-selected="false" tabindex="-1" type="button">Transient health</button>
         <button id="tab-physical" role="tab" aria-controls="physical-view" aria-selected="false" tabindex="-1" type="button">Physical quantities</button>
@@ -128,6 +130,133 @@
       <article class="panel evidence-panel">
         <h3>Independent verdicts</h3>
         <div id="verdict-summary" class="verdict-grid"></div>
+      </article>
+    </section>
+
+    <section id="meshing-view" class="view-panel" role="tabpanel" aria-labelledby="tab-meshing" hidden>
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Phase-local evidence</p>
+          <h2>snappyHexMesh progress</h2>
+        </div>
+        <p id="meshing-summary" class="section-summary">Waiting for a snappyHexMesh log.</p>
+      </div>
+      <div class="two-column">
+        <article class="panel">
+          <h3 id="meshing-stage">Stage unknown</h3>
+          <p id="meshing-current-work" class="section-summary">No current operation has been parsed.</p>
+          <label class="progress-label" for="meshing-progress">Current phase progress</label>
+          <progress id="meshing-progress" max="100">Indeterminate</progress>
+          <p id="meshing-progress-detail" class="muted">No reliable phase percentage is available.</p>
+        </article>
+        <article class="panel">
+          <h3>Meshing configuration</h3>
+          <dl id="meshing-settings" class="fact-list"></dl>
+        </article>
+      </div>
+      <article class="panel">
+        <h3>Latest mesh size</h3>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Cells</th>
+                <th scope="col">Faces</th>
+                <th scope="col">Points</th>
+                <th scope="col">maxGlobalCells</th>
+              </tr>
+            </thead>
+            <tbody id="meshing-mesh-body"></tbody>
+          </table>
+        </div>
+      </article>
+      <article class="panel">
+        <h3>Meshing warnings</h3>
+        <ul id="meshing-warning-list" class="notice-list"></ul>
+      </article>
+      <article class="panel">
+        <div class="panel-heading">
+          <div>
+            <h3>Surface layer coverage</h3>
+            <p id="layer-coverage-summary" class="section-summary">No completed layer table has been parsed.</p>
+          </div>
+        </div>
+        <p id="layer-coverage-advisory" class="advisory-note">Coverage is advisory and uses patch averages.</p>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Patch</th>
+                <th scope="col">Faces</th>
+                <th scope="col">Requested layers</th>
+                <th scope="col">Average layers</th>
+                <th scope="col">Layer coverage</th>
+                <th scope="col">Average thickness</th>
+                <th scope="col">Thickness realised</th>
+                <th scope="col">State</th>
+              </tr>
+            </thead>
+            <tbody id="layer-coverage-body"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <section id="mesh-quality-view" class="view-panel" role="tabpanel" aria-labelledby="tab-mesh-quality" hidden>
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Automatic read-only assessment</p>
+          <h2>Mesh quality</h2>
+        </div>
+        <p id="mesh-quality-summary" class="section-summary">Waiting for a complete stable mesh.</p>
+      </div>
+      <div class="two-column">
+        <article class="panel">
+          <h3>Automatic check</h3>
+          <dl id="mesh-quality-facts" class="fact-list"></dl>
+        </article>
+        <article class="panel">
+          <h3>Interpretation</h3>
+          <p id="mesh-quality-advisory" class="advisory-note">The result is advisory and must be judged for this simulation.</p>
+          <p class="muted">The watcher waits 15 seconds after mesh files stop changing, then runs one thorough check in the background. It does not create sets or surfaces.</p>
+        </article>
+      </div>
+      <article class="panel">
+        <h3>Geometry and topology evidence</h3>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Metric</th>
+                <th scope="col">Observed</th>
+                <th scope="col">Reported target</th>
+                <th scope="col">State</th>
+                <th scope="col">Evidence</th>
+              </tr>
+            </thead>
+            <tbody id="mesh-quality-metric-body"></tbody>
+          </table>
+        </div>
+      </article>
+      <article class="panel">
+        <h3>Reported problem counts</h3>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Problem</th>
+                <th scope="col">Count</th>
+                <th scope="col">Reported limit</th>
+                <th scope="col">Evidence</th>
+              </tr>
+            </thead>
+            <tbody id="mesh-quality-problem-body"></tbody>
+          </table>
+        </div>
+      </article>
+      <article class="panel">
+        <h3>Bounded checkMesh output</h3>
+        <ul id="mesh-quality-diagnostics" class="notice-list diagnostic-output"></ul>
       </article>
     </section>
 
@@ -285,13 +414,14 @@
         </article>
       </div>
       <article class="panel">
-        <h3>Solver log candidates</h3>
+        <h3>OpenFOAM log candidates</h3>
         <div class="table-scroll">
           <table>
             <thead>
               <tr>
                 <th scope="col">Selected</th>
                 <th scope="col">Candidate</th>
+                <th scope="col">Workflow</th>
                 <th scope="col">Score</th>
                 <th scope="col">Reason</th>
               </tr>

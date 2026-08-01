@@ -212,6 +212,7 @@ class CaseInspection:
 class LogCandidate:
     path: Path
     relative_path: str
+    workflow: str
     score: int
     reasons: tuple[str, ...]
     modified_ns: int
@@ -226,6 +227,104 @@ class LogChunk:
     lines: tuple[str, ...]
     file_size: int
     modified_ns: int
+
+
+@dataclass(frozen=True)
+class LayerRequest:
+    selector: str
+    requested_layers: int
+
+
+@dataclass(frozen=True)
+class SnappySettings:
+    add_layers: bool | None
+    n_solve_iter: int | None
+    n_relax_iter: int | None
+    max_global_cells: int | None
+    stage_count: int
+    layer_requests: tuple[LayerRequest, ...]
+    notices: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LayerCoverageRow:
+    patch: str
+    faces: int
+    average_layers: float
+    average_thickness: float
+    thickness_percent: float
+    requested_layers: int | None
+    matched_selector: str | None
+    layer_fraction: float | None
+    status: str
+    summary: str
+
+
+@dataclass(frozen=True)
+class LayerCoverageReport:
+    status: str
+    summary: str
+    rows: tuple[LayerCoverageRow, ...]
+    requested_patch_count: int
+    reported_patch_count: int
+    unmatched_selectors: tuple[str, ...]
+    advisory: str
+
+
+@dataclass(frozen=True)
+class MeshQualityMetric:
+    code: str
+    label: str
+    observed: float | str | None
+    unit: str | None
+    target: float | str | None
+    status: str
+    explanation: str
+
+
+@dataclass(frozen=True)
+class MeshQualityProblem:
+    code: str
+    label: str
+    count: int
+    limit: float | None
+    explanation: str
+
+
+@dataclass(frozen=True)
+class MeshQualityReport:
+    status: str
+    summary: str
+    mesh_ok: bool | None
+    failed_checks: int | None
+    exit_code: int
+    command: tuple[str, ...]
+    started_at: float | None
+    finished_at: float | None
+    execution_seconds: float | None
+    points: int | None
+    faces: int | None
+    internal_faces: int | None
+    cells: int | None
+    regions: int | None
+    bounding_box_min: tuple[float, float, float] | None
+    bounding_box_max: tuple[float, float, float] | None
+    geometric_directions: tuple[int, int, int] | None
+    solution_directions: tuple[int, int, int] | None
+    metrics: tuple[MeshQualityMetric, ...]
+    problems: tuple[MeshQualityProblem, ...]
+    diagnostics: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class MeshQualityStatus:
+    state: str
+    summary: str
+    mesh_source: str | None
+    stable_for_seconds: float | None
+    next_check_seconds: float | None
+    report: MeshQualityReport | None
+    advisory: str
 
 
 @dataclass(frozen=True)
@@ -262,6 +361,34 @@ class FailureRecord:
     line: str
     segment: int
     simulation_time: float | None
+
+
+@dataclass(frozen=True)
+class SnappyTelemetry:
+    current_segment: int
+    stage: str
+    stage_index: int | None
+    stage_count: int
+    current_work: str | None
+    active_morph_iteration: int | None
+    completed_morph_iterations: int | None
+    morph_total: int | None
+    smoothing_iteration: int | None
+    smoothing_total: int | None
+    phase_progress_percent: float | None
+    mesh_cells: int | None
+    mesh_faces: int | None
+    mesh_points: int | None
+    max_global_cells_reached: bool
+    execution_seconds: float | None
+    clock_seconds: float | None
+    completed: bool
+    warnings: tuple[str, ...]
+    warning_count: int
+    failure: FailureRecord | None
+    notices: tuple[str, ...]
+    notice_count: int
+    layer_coverage: LayerCoverageReport
 
 
 @dataclass(frozen=True)
